@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GISAXS Pixel Converter</title>
+<meta name="description" content="Convert a GISAXS detector frame to exit angles, final wavevector and scattering vector, mask the specular rod or spot, and plot maps and profiles. Runs entirely in the browser with Python (Pyodide).">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d4f91'/%3E%3Cpath d='M16 27V5' stroke='%23fff' stroke-width='2'/%3E%3Ccircle cx='16' cy='12' r='4' fill='%23ffd23f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.18.9/dist/katex.min.css" integrity="sha384-lPx0C4zIUZLpveABMwOFcFeGZwsvKBJfhJ85FN1PYOV7xApBcFMhcAEMVKF8loOI" crossorigin="anonymous">
+<link rel="stylesheet" href="css/style.css">
+<script defer src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@4.1.1/plotly.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.18.9/dist/katex.min.js" integrity="sha384-19KE2cFb3U+RUWmyhBz7aLOGDG8WrRC6hE3oY/HTZZlAAVWYTdmvLC//+TIV3zUx" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.18.9/dist/contrib/auto-render.min.js" integrity="sha384-bjyGPfbij8/NDKJhSGZNP/khQVgtHUE5exjm4Ydllo42FwIgYsdLO2lXGmRBf5Mz" crossorigin="anonymous"></script>
+<script defer src="js/app.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <h1>GISAXS pixel converter</h1>
+      <p>detector (x, y) &rarr; &phi;<sub>f</sub>, &alpha;<sub>f</sub>, <b>k</b><sub>f</sub>, <b>q</b> &middot; Python in your browser, files stay on this computer</p>
+    </div>
+    <div class="toolbar">
+      <div class="tool">
+        <span class="tool-label" id="unit-label">q, k unit</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="unit-label">
+          <button type="button" role="radio" data-unit="nm-1" aria-checked="true">nm&#8315;&sup1;</button>
+          <button type="button" role="radio" data-unit="A-1" aria-checked="false">&Aring;&#8315;&sup1;</button>
+        </div>
+      </div>
+      <div class="tool">
+        <label class="tool-label" for="export-preset">Export style</label>
+        <select id="export-preset">
+          <option value="publication">Publication</option>
+          <option value="presentation">Presentation / projector</option>
+        </select>
+      </div>
+      <div class="tool" id="export-columns-tool">
+        <label class="tool-label" for="export-columns">Width</label>
+        <select id="export-columns">
+          <option value="1">1 column (3.375 in)</option>
+          <option value="2">2 columns (6.9 in)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="statusbar" id="status" data-state="busy" role="status" aria-live="polite">
+    <span class="dot" aria-hidden="true"></span><span id="status-text">Loading Python&hellip;</span>
+  </div>
+</header>
+
+<main>
+
+<!-- 1 ------------------------------------------------------------------ -->
+<section class="step" id="step-1">
+  <header class="step-head"><span class="num">1</span><h2>Upload the measurement</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <div class="dropzone" id="dropzone">
+      <p class="drop-title">Drop the <code>.dat</code> and <code>.pro</code> files here, or choose them:</p>
+      <div class="pickers">
+        <label class="picker">
+          <span class="picker-kind">Detector data</span>
+          <span class="picker-ext">.dat</span>
+          <input type="file" id="file-dat" accept=".dat">
+          <span class="picker-name" id="name-dat">no file chosen</span>
+        </label>
+        <label class="picker">
+          <span class="picker-kind">Instrument (BornAgain 1.7 project)</span>
+          <span class="picker-ext">.pro</span>
+          <input type="file" id="file-pro" accept=".pro">
+          <span class="picker-name" id="name-pro">no file chosen</span>
+        </label>
+      </div>
+      <p class="hint">Both files are read by Python running inside this page. Nothing is uploaded anywhere.</p>
+    </div>
+    <div class="msg" id="msg-1" hidden></div>
+  </div>
+</section>
+
+<!-- 2 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-2">
+  <header class="step-head"><span class="num">2</span><h2>Instrument parameters (.pro)</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <div class="table-wrap"><table class="params" id="pro-table"></table></div>
+    <p class="note">Only the length of the detector normal <b>N</b> is used: the detector is treated as perpendicular to the incident beam at distance <i>L</i> = |<b>N</b>|.</p>
+  </div>
+</section>
+
+<details class="geometry locked" id="geometry">
+  <summary><span class="num num-alt" aria-hidden="true">&#8734;</span><span class="summary-title">Geometry &amp; equations</span><span class="summary-hint">frames, conventions and every formula the app uses</span></summary>
+  <div class="geometry-body">
+    <figure class="schematic">
+      <img src="assets/geometry.svg" alt="Schematic of the GISAXS geometry: (a) side view in the lab frame with the sample frame axes, (b) the detector face with direct beam, sample horizon, specular spot, specular rod and a pixel (x, y), (c) top view with phi_f, (d) the vectors: sample axes, r in both frames, k_i, k_f and q." width="752" height="518">
+      <figcaption>Schematic of the setup (<a href="docs/geometry.pdf">PDF</a>, <a href="docs/geometry.tex">TikZ source</a>).</figcaption>
+    </figure>
+
+    <h3>Three coordinate systems</h3>
+    <div class="table-wrap"><table class="plain">
+      <thead><tr><th>system</th><th>axes</th><th>meaning</th></tr></thead>
+      <tbody>
+        <tr><td><b>lab frame</b></td><td>\(X, Y, Z\)</td><td>\(X\) along the incident beam, \(Z\) vertical up, \(Y = Z \times X\) (horizontal)</td></tr>
+        <tr><td><b>sample frame</b></td><td>\(\hat{\mathbf u}, \hat{\mathbf v}, \hat{\mathbf n}\)</td><td>\(\hat{\mathbf u}\) in the surface along the beam, \(\hat{\mathbf v} = \hat{\mathbf Y}\) in the surface, \(\hat{\mathbf n}\) the surface normal</td></tr>
+        <tr><td><b>detector</b></td><td>\(x, y\)</td><td>position on the detector in mm, measured from the direct beam; the detector plane is the \(Y\)&ndash;\(Z\) plane: \(x\) along \(Y\), \(y\) along \(Z\) (up)</td></tr>
+      </tbody>
+    </table></div>
+
+    <p>The sample is tilted by \(\alpha_i\) about \(Y\). In lab components</p>
+    $$\hat{\mathbf u}=(\cos\alpha_i,\ 0,\ \sin\alpha_i),\qquad \hat{\mathbf v}=(0,\ 1,\ 0),\qquad \hat{\mathbf n}=(-\sin\alpha_i,\ 0,\ \cos\alpha_i)$$
+    <p><b>All results (\(\varphi_f, \alpha_f, \mathbf k_f, \mathbf q\)) are in the sample frame</b>: the components written \(x, y, z\) (\(k_{fx}, q_x, \dots\)) are the components along \(\hat{\mathbf u}, \hat{\mathbf v}, \hat{\mathbf n}\).</p>
+
+    <h3>Pixel position</h3>
+    $$\mathbf r = L\,\hat{\mathbf X} + x\,\hat{\mathbf Y} + y\,\hat{\mathbf Z} = a\,\hat{\mathbf u} + b\,\hat{\mathbf v} + c\,\hat{\mathbf n}$$
+    $$a = L\cos\alpha_i + y\sin\alpha_i,\qquad b = x,\qquad c = y\cos\alpha_i - L\sin\alpha_i,\qquad R = \sqrt{L^2 + x^2 + y^2} = \sqrt{a^2+b^2+c^2}$$
+
+    <h3>Exit angles, wavevectors and q</h3>
+    $$\varphi_f = \operatorname{atan2}(b,\ a),\qquad \alpha_f = \operatorname{atan2}\!\left(c,\ \sqrt{a^2+b^2}\right)$$
+    $$k = \frac{2\pi}{\lambda},\qquad \mathbf k_f = \frac{k}{R}\,(a,\ b,\ c),\qquad \mathbf k_i = k\,(\cos\alpha_i,\ 0,\ -\sin\alpha_i)$$
+    $$q_x = k\left(\frac{a}{R} - \cos\alpha_i\right),\qquad q_y = k\,\frac{b}{R},\qquad q_z = k\left(\frac{c}{R} + \sin\alpha_i\right)$$
+    <p>Equivalently \(q_x = k(\cos\alpha_f\cos\varphi_f - \cos\alpha_i)\), \(q_y = k\cos\alpha_f\sin\varphi_f\), \(q_z = k(\sin\alpha_f + \sin\alpha_i)\). The code uses the \(a/R, b/R, c/R\) form, vectorised over all pixels.</p>
+
+    <h3>Special positions</h3>
+    <div class="table-wrap"><table class="plain" id="special-table">
+      <thead><tr><th>feature</th><th>condition</th><th>detector position</th><th>this file</th></tr></thead>
+      <tbody>
+        <tr><td>direct beam</td><td>\(\alpha_f = -\alpha_i,\ \varphi_f = 0\)</td><td>\(x = 0,\ y = 0\)</td><td data-special="beam">&ndash;</td></tr>
+        <tr><td>sample horizon</td><td>\(\alpha_f = 0\)</td><td>\(y = L\tan\alpha_i\)</td><td data-special="horizon">&ndash;</td></tr>
+        <tr><td>specular spot</td><td>\(\alpha_f = \alpha_i,\ \varphi_f = 0\)</td><td>\(x = 0,\ y = L\tan 2\alpha_i\)</td><td data-special="specular">&ndash;</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Conventions and assumptions</h3>
+    <ul class="tight">
+      <li>The detector is perpendicular to the incident beam at distance \(L = |\mathbf N|\).</li>
+      <li>\(x, y\) in the <code>.dat</code> file are measured from the direct-beam spot.</li>
+      <li>\(\varphi_f\) increases with \(x\). BornAgain uses the opposite sign for \(\varphi_f\) and \(q_y\); this app does not.</li>
+      <li>Angles are shown and exported in degrees; \(k\) and \(q\) in nm<sup>&minus;1</sup> (\(\lambda\) is in nm) or &Aring;<sup>&minus;1</sup> with the toggle at the top.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- 3 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-3">
+  <header class="step-head"><span class="num">3</span><h2>Raw data</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <dl class="facts" id="dat-facts"></dl>
+    <h3 class="sub">First rows <span class="muted">(<code>df.head()</code>)</span></h3>
+    <div class="table-wrap"><table class="data" id="dat-head"></table></div>
+  </div>
+</section>
+
+<!-- 4 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-4">
+  <header class="step-head"><span class="num">4</span><h2>Raw intensity map <span class="muted">(optional)</span></h2><span class="chip"></span></header>
+  <div class="step-body">
+    <label class="check"><input type="checkbox" id="show-raw"> Show raw intensity map (y vs x, full detector)</label>
+    <div class="cards" id="cards-raw"></div>
+  </div>
+</section>
+
+<!-- 5 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-5">
+  <header class="step-head"><span class="num">5</span><h2>Exit angles (x, y) &rarr; (&phi;<sub>f</sub>, &alpha;<sub>f</sub>)</h2><span class="chip"></span></header>
+  <div class="step-body">
+    $$\varphi_f = \operatorname{atan2}(b,\ a),\qquad \alpha_f = \operatorname{atan2}\!\left(c,\ \sqrt{a^2+b^2}\right)$$
+    <div class="actions">
+      <button type="button" class="primary" id="btn-convert">Convert (runs steps 5&ndash;8)</button>
+      <span class="muted">Adds 8 columns to every pixel, then drops the rows below the sample horizon.</span>
+    </div>
+    <div class="result" id="res-5"></div>
+    <div class="msg" id="msg-5" hidden></div>
+  </div>
+</section>
+
+<!-- 6 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-6">
+  <header class="step-head"><span class="num">6</span><h2>Final wavevector <b>k</b><sub>f</sub></h2><span class="chip"></span></header>
+  <div class="step-body">
+    $$\mathbf k_f = \frac{k}{R}\,(a,\ b,\ c):\qquad k_{fx} = k\frac{a}{R},\quad k_{fy} = k\frac{b}{R},\quad k_{fz} = k\frac{c}{R}$$
+    <div class="result" id="res-6"></div>
+  </div>
+</section>
+
+<!-- 7 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-7">
+  <header class="step-head"><span class="num">7</span><h2>Scattering vector <b>q</b> = <b>k</b><sub>f</sub> &minus; <b>k</b><sub>i</sub></h2><span class="chip"></span></header>
+  <div class="step-body">
+    $$q_x = k\left(\frac{a}{R} - \cos\alpha_i\right),\qquad q_y = k\,\frac{b}{R},\qquad q_z = k\left(\frac{c}{R} + \sin\alpha_i\right)$$
+    <div class="result" id="res-7"></div>
+  </div>
+</section>
+
+<!-- 8 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-8">
+  <header class="step-head"><span class="num">8</span><h2>Drop everything below the sample horizon</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <p>For each detector row, \(\alpha_{f,\text{row}} = \operatorname{atan2}(c, a)\) at \(x = 0\); every row with \(\alpha_{f,\text{row}} &lt; 0\) is dropped as a whole, so the data stays a rectangular image. The beamstop lies below the horizon and goes with it.</p>
+    <div class="result" id="res-8"></div>
+  </div>
+</section>
+
+<!-- 9 ------------------------------------------------------------------ -->
+<section class="step locked" id="step-9">
+  <header class="step-head"><span class="num">9</span><h2>Converted table</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <p class="muted" id="conv-summary"></p>
+    <div class="table-wrap"><table class="data" id="conv-head"></table></div>
+    <div class="actions">
+      <button type="button" class="primary" data-download-table="converted" data-fmt="csv.gz">Download .csv.gz</button>
+      <button type="button" data-download-table="converted" data-fmt="csv">Download plain .csv</button>
+      <span class="muted">About 31 MB compressed or 108 MB plain for a 1 Mpixel frame. 8 significant digits; a <code>#</code> header records the setup. Loads with <code>pandas.read_csv(path, comment="#")</code>.</span>
+    </div>
+    <div class="msg" id="msg-9" hidden></div>
+  </div>
+</section>
+
+<!-- 10 ----------------------------------------------------------------- -->
+<section class="step locked" id="step-10">
+  <header class="step-head"><span class="num">10</span><h2>Specular rod</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <fieldset class="question">
+      <legend>Mask the specular rod?</legend>
+      <label class="radio"><input type="radio" name="rod" value="yes"> Yes</label>
+      <label class="radio"><input type="radio" name="rod" value="no"> No</label>
+    </fieldset>
+    <div class="options" id="rod-options" hidden>
+      <label>Width n<sub>&sigma;</sub> <input type="number" id="rod-nsigma" value="4" min="0.1" step="0.5"></label>
+      <label>or fixed half-width <input type="number" id="rod-halfwidth" min="0" step="any" placeholder="deg (optional)"></label>
+      <button type="button" id="rod-apply">Apply</button>
+      <span class="muted">The rod is found with <code>mask.find_rod</code>; pixels within the band get intensity and variance NaN.</span>
+    </div>
+    <div class="result" id="res-10"></div>
+    <div class="msg" id="msg-10" hidden></div>
+  </div>
+</section>
+
+<!-- 11 ----------------------------------------------------------------- -->
+<section class="step locked" id="step-11">
+  <header class="step-head"><span class="num">11</span><h2>Specular spot</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <p class="muted" id="spot-skipped" hidden>Skipped: the specular spot lies on the masked rod.</p>
+    <div id="spot-question-wrap">
+      <fieldset class="question">
+        <legend>Mask the specular spot?</legend>
+        <label class="radio"><input type="radio" name="spot" value="yes"> Yes</label>
+        <label class="radio"><input type="radio" name="spot" value="no"> No</label>
+      </fieldset>
+      <div class="options" id="spot-options" hidden>
+        <label>Ellipse n<sub>&sigma;</sub> <input type="number" id="spot-nsigma" value="4" min="0.1" step="0.5"></label>
+        <label>Window &plusmn;W <input type="number" id="spot-window" value="15" min="3" step="1"> pixels</label>
+        <label class="check"><input type="checkbox" id="spot-follow"> Follow the peak (re-centre the window on the brightest pixel)</label>
+        <button type="button" id="spot-apply">Apply</button>
+      </div>
+      <p class="muted small">The window starts at the predicted position \(\varphi_f = 0,\ \alpha_f = \alpha_i\). Background = median of the outer 20&nbsp;% of the window; FWHM from the half-maximum crossings (linear interpolation); centre = centroid above half maximum.</p>
+    </div>
+    <div class="result" id="res-11"></div>
+    <div class="msg" id="msg-11" hidden></div>
+  </div>
+</section>
+
+<!-- 12 ----------------------------------------------------------------- -->
+<section class="step locked" id="step-12">
+  <header class="step-head"><span class="num">12</span><h2>2D intensity maps</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <p class="muted">Every pixel is drawn as one point coloured by its counts: no averaging, no regridding.</p>
+    <div class="checks">
+      <label class="check"><input type="checkbox" data-map="qz_qy"> q<sub>z</sub> vs q<sub>y</sub></label>
+      <label class="check"><input type="checkbox" data-map="af_pf"> &alpha;<sub>f</sub> vs &phi;<sub>f</sub></label>
+      <label class="check"><input type="checkbox" data-map="y_x"> y vs x</label>
+    </div>
+    <div class="cards" id="cards-maps"></div>
+  </div>
+</section>
+
+<!-- 13 ----------------------------------------------------------------- -->
+<section class="step locked" id="step-13">
+  <header class="step-head"><span class="num">13</span><h2>1D profiles: mean counts per pixel</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <p class="muted">Averaged along the detector grid (columns for &phi;<sub>f</sub>, q<sub>y</sub>; rows for &alpha;<sub>f</sub>, q<sub>z</sub>). NaN pixels are ignored; a fully masked column or row is drawn as a gap.</p>
+    <div class="checks">
+      <label class="check"><input type="checkbox" data-profile="phi_f"> vs &phi;<sub>f</sub></label>
+      <label class="check"><input type="checkbox" data-profile="qy"> vs q<sub>y</sub></label>
+      <label class="check"><input type="checkbox" data-profile="alpha_f"> vs &alpha;<sub>f</sub></label>
+      <label class="check"><input type="checkbox" data-profile="qz"> vs q<sub>z</sub></label>
+    </div>
+    <div class="cards" id="cards-profiles"></div>
+  </div>
+</section>
+
+<!-- 14 ----------------------------------------------------------------- -->
+<section class="step locked" id="step-14">
+  <header class="step-head"><span class="num">14</span><h2>Download plots</h2><span class="chip"></span></header>
+  <div class="step-body">
+    <p>Each plot is redrawn with matplotlib in the style chosen at the top (<b>Publication</b>: journal column width; <b>Presentation</b>: 16&nbsp;pt text, thicker lines, 8&nbsp;&times;&nbsp;6&nbsp;in). In 2D maps the point layer is rasterised at 600&nbsp;dpi; axes, labels and colour bar stay vector in the PDF. Colour scale, log setting and q unit follow what is on screen.</p>
+    <ul class="hub" id="download-hub"><li class="muted">Tick a plot in steps 4, 12 or 13 to list it here.</li></ul>
+    <div class="msg" id="msg-14" hidden></div>
+  </div>
+</section>
+
+</main>
+
+<footer class="page-foot">
+  <p id="versions">Python runs in your browser via <a href="https://pyodide.org/">Pyodide</a>; plots by <a href="https://plotly.com/javascript/">Plotly</a> (screen) and matplotlib (files).</p>
+</footer>
+
+<template id="tpl-map">
+  <article class="card">
+    <header class="card-head"><h3 class="card-title"></h3><span class="card-meta muted"></span></header>
+    <div class="card-options">
+      <label class="check"><input type="checkbox" class="opt-log" checked> Log scale</label>
+      <label>Colormap <select class="opt-cmap"></select></label>
+      <label>Zero counts <select class="opt-zero"><option value="black">black</option><option value="white">white</option></select></label>
+      <label>v<sub>min</sub> <input type="number" class="opt-vmin" min="0" step="any" placeholder="1"></label>
+      <label>v<sub>max</sub> <input type="number" class="opt-vmax" min="0" step="any" placeholder="max"></label>
+      <label>Point size <input type="number" class="opt-size" min="0.5" max="40" step="0.5" placeholder="auto"></label>
+    </div>
+    <div class="plot plot-map"></div>
+    <footer class="card-foot">
+      <span class="card-note muted"></span>
+      <span class="dl"><button type="button" data-fmt="png">PNG</button><button type="button" data-fmt="pdf">PDF</button></span>
+    </footer>
+  </article>
+</template>
+
+<template id="tpl-profile">
+  <article class="card">
+    <header class="card-head"><h3 class="card-title"></h3><span class="card-meta muted"></span></header>
+    <div class="card-options">
+      <label class="check"><input type="checkbox" class="opt-log" checked> Log y-axis</label>
+    </div>
+    <div class="plot plot-profile"></div>
+    <footer class="card-foot">
+      <span class="card-note muted"></span>
+      <span class="dl"><button type="button" data-fmt="png">PNG</button><button type="button" data-fmt="pdf">PDF</button></span>
+    </footer>
+  </article>
+</template>
+
+</body>
+</html>
