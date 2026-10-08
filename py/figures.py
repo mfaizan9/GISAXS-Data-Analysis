@@ -33,7 +33,9 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 # Projector-friendly and colour-blind-safe first; no red-green maps.
 COLORMAPS = ["viridis", "cividis", "inferno", "magma", "turbo"]
-ZERO_COLOURS = {"black": "black", "white": "white"}
+# Measured zeros (the "under" colour); the first is the default, so the maps
+# sit on a white background.
+ZERO_COLOURS = {"white": "white", "black": "black"}
 PRESETS = ("publication", "presentation")
 PRESENTATION_SIZE = (8.0, 6.0)
 
@@ -114,7 +116,7 @@ def colour_limits(counts, vmin=None, vmax=None):
 
 
 def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
-                  vmin=None, vmax=None, zero_colour="black",
+                  vmin=None, vmax=None, zero_colour="white",
                   preset="publication", columns=1, fmt="png", pixel=None,
                   equal_aspect=True):
     """A scatter plot of every pixel coloured by counts; returns PNG/PDF bytes.

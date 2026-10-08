@@ -52,6 +52,11 @@ Q_UNITS = {
 # A counting detector writes -1 for a dead pixel.
 DEAD_PIXEL = -1
 
+# 1D profiles are smoothed with a centred running mean of this many points;
+# the UI offers SMOOTHING_WINDOWS (1 = no smoothing).
+DEFAULT_SMOOTHING = 7
+SMOOTHING_WINDOWS = (7, 5, 1)
+
 
 class InputError(ValueError):
     """A problem with the user's files, worded for the user."""
@@ -264,6 +269,25 @@ def column_mean_profile(df, label="phi_f"):
         warnings.simplefilter("ignore", RuntimeWarning)
         means = np.nanmean(intensity, axis=0)
     return pd.Series(means, index=coord.mean(axis=0))
+
+
+def smooth_profile(profile, window=DEFAULT_SMOOTHING):
+    """Centred running mean of `window` neighbouring points of a profile.
+
+        smooth = profile.rolling(window, center=True, min_periods=1).mean()
+
+    min_periods=1 keeps the points at both ends (their windows are shorter).
+    A point that was NaN before (a fully masked row or column) is NaN again
+    afterwards, so a masked region stays a gap instead of being filled in from
+    its edges.  window = 1 returns the profile unchanged.
+    """
+    window = int(window)
+    if window < 1 or window % 2 == 0:
+        raise ValueError("the smoothing window must be an odd number of points")
+    if window == 1:
+        return profile.copy()
+    smooth = profile.rolling(window, center=True, min_periods=1).mean()
+    return smooth.where(profile.notna())
 
 
 # ---------------------------------------------------------------------------

@@ -932,13 +932,23 @@ class MapCard extends Card {
     if (nUnder) {
       traces.push({
         type: "scattergl", mode: "markers", name: underName, x: ux, y: uy, customdata: uc,
+        showlegend: false, legendgroup: "under",
         marker: marker({ color: colours.under[o.zero] }),
         hovertemplate: `${where}<br>I = %{customdata:.6~r} cts<extra></extra>`,
+      });
+      // Its legend entry: an outlined square, so the default white swatch
+      // stays visible on the white background.  Clicking it toggles the group.
+      traces.push({
+        type: "scatter", mode: "markers", name: underName, x: [null], y: [null],
+        legendgroup: "under", legendrank: 1, hoverinfo: "skip",
+        marker: { color: colours.under[o.zero], size: 10, symbol: "square",
+                  line: { color: "#8a94a3", width: 1 } },
       });
     }
     if (nBad) {
       traces.push({
         type: "scattergl", mode: "markers", name: "masked or dead (NaN)", x: bx, y: by,
+        legendrank: 2,
         marker: marker({ color: colours.bad }),
         hovertemplate: `${where}<br>masked or dead pixel<extra></extra>`,
       });
@@ -992,9 +1002,12 @@ class MapCard extends Card {
     try { o = this.options(); } catch (_) { return; }
     if (o.size || !this.data) return;
     const size = this.autoSize();
-    const current = this.plot.data && this.plot.data[0] && this.plot.data[0].marker.size;
+    // Only the WebGL pixel layers; the legend swatch keeps its own size.
+    const layers = (this.plot.data || []).map((t, i) => (t.type === "scattergl" ? i : -1)).filter((i) => i >= 0);
+    if (!layers.length) return;
+    const current = this.plot.data[layers[0]].marker.size;
     if (current && Math.abs(current - size) < 0.25) return;
-    Plotly.restyle(this.plot, { "marker.size": size });
+    Plotly.restyle(this.plot, { "marker.size": size }, layers);
   }
 }
 
@@ -1010,18 +1023,28 @@ class ProfileCard extends Card {
     this.label = def.title;
     $(".card-title", this.el).innerHTML = def.title;
     $(".opt-log", this.el).addEventListener("change", () => { if (this.data) this.draw(); });
+    const smooth = $(".opt-smooth", this.el);
+    smooth.value = String(state.init.default_smoothing);
+    // Smoothing is done in Python (gisaxs.smooth_profile), the same code the
+    // exported figure uses, so a change re-fetches this one small profile.
+    smooth.addEventListener("change", () => this.refresh());
+  }
+
+  smoothing() {
+    return Number($(".opt-smooth", this.el).value);
   }
 
   currentDataKey() {
-    return `${state.loadToken}|${state.version}|${this.usesQ ? state.qUnit : ""}`;
+    return `${state.loadToken}|${state.version}|${this.usesQ ? state.qUnit : ""}|${this.smoothing()}`;
   }
 
   fetch() {
-    return py("profile_data", { kind: this.kind, q_unit: state.qUnit }, [], "Computing the profile…");
+    return py("profile_data", { kind: this.kind, q_unit: state.qUnit, smooth: this.smoothing() },
+              [], "Computing the profile…");
   }
 
   exportArgs() {
-    return { log: $(".opt-log", this.el).checked };
+    return { log: $(".opt-log", this.el).checked, smooth: this.smoothing() };
   }
 
   draw() {
@@ -1046,9 +1069,10 @@ class ProfileCard extends Card {
     };
     Plotly.react(this.plot, [trace], layout, PLOT_CONFIG);
     $(".card-meta", this.el).textContent = `${int(meta.n)} ${this.def.along}, ${maskLabel()}`;
-    this.note.textContent = meta.n_gaps
+    const smoothing = meta.smooth > 1 ? `smoothed: centred running mean of ${meta.smooth} points` : "not smoothed";
+    this.note.textContent = `${smoothing} · ` + (meta.n_gaps
       ? `${int(meta.n_gaps)} fully masked ${this.def.along.replace("detector ", "")} drawn as gaps`
-      : "no fully masked columns or rows";
+      : "no fully masked columns or rows");
   }
 }
 

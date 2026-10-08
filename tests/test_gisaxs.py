@@ -213,6 +213,36 @@ def test_profiles_are_means_and_masked_columns_are_gaps():
     assert mask.column_profile(df).iloc[1] == pytest.approx(counts[:, 1].sum())
 
 
+@pytest.mark.parametrize("window", [5, 7])
+def test_smoothing_is_the_centred_rolling_mean(window):
+    rng = np.random.default_rng(3)
+    profile = pd.Series(rng.poisson(20, 60).astype(float),
+                        index=np.linspace(-1.0, 1.0, 60))
+    got = gisaxs.smooth_profile(profile, window)
+    expected = profile.rolling(window, center=True, min_periods=1).mean()
+    pd.testing.assert_series_equal(got, expected)
+    # min_periods=1: the first point averages the half-window that exists
+    assert got.iloc[0] == pytest.approx(profile.iloc[:window // 2 + 1].mean())
+    assert got.iloc[30] == pytest.approx(profile.iloc[30 - window // 2:31 + window // 2].mean())
+
+
+def test_smoothing_keeps_masked_gaps():
+    profile = pd.Series(np.arange(20, dtype=float), index=np.arange(20) * 0.1)
+    profile.iloc[8:12] = np.nan                  # a fully masked rod: 4 columns
+    got = gisaxs.smooth_profile(profile, 7)
+    assert got.isna().tolist() == profile.isna().tolist()
+    # next to the gap, the mean is over the unmasked points of the window
+    assert got.iloc[7] == pytest.approx(np.mean([4, 5, 6, 7]))
+    assert got.iloc[12] == pytest.approx(np.mean([12, 13, 14, 15]))
+
+
+def test_smoothing_window_one_is_identity_and_even_is_refused():
+    profile = pd.Series([1.0, np.nan, 3.0, 4.0])
+    pd.testing.assert_series_equal(gisaxs.smooth_profile(profile, 1), profile)
+    with pytest.raises(ValueError, match="odd"):
+        gisaxs.smooth_profile(profile, 6)
+
+
 # ---------------------------------------------------------------------------
 # reading .dat files
 # ---------------------------------------------------------------------------
@@ -432,6 +462,8 @@ def test_screen_colours_match_plotstyle():
     colours = figures.screen_colours()
     assert set(colours["scales"]) == set(figures.COLORMAPS)
     assert colours["under"]["black"] == "#000000"
+    assert colours["under"]["white"] == "#ffffff"
+    assert next(iter(figures.ZERO_COLOURS)) == "white"   # maps default to white
     assert colours["bad"] == "#595959"          # plotstyle's bad colour "0.35"
 
 
@@ -522,11 +554,18 @@ def test_bridge_end_to_end(tmp_path):
     assert out["arrays"]["x"].dtype == np.float32 and len(out["arrays"]["c"]) == 950_900
     meta, out = call("profile_data", kind="qy")
     assert len(out["arrays"]["x"]) == 1028
+    assert meta["smooth"] == gisaxs.DEFAULT_SMOOTHING == 7
+    raw = gisaxs.column_mean_profile(bridge.S.data, "qy")
+    np.testing.assert_allclose(out["arrays"]["y"],
+                               raw.rolling(7, center=True, min_periods=1).mean())
+    _, out = call("profile_data", kind="qy", smooth=1)
+    np.testing.assert_allclose(out["arrays"]["y"], raw.to_numpy())
 
     meta, _ = call("apply_mask", kind="rod", n_sigma=4)
     assert meta["n_masked"] > 0
     meta, out = call("profile_data", kind="phi_f")
-    assert meta["n_gaps"] > 0
+    unsmoothed, _ = call("profile_data", kind="phi_f", smooth=1)
+    assert meta["n_gaps"] == unsmoothed["n_gaps"] > 0     # the rod stays a gap
 
     # the spot is not where alpha_i predicts in this file (see README)
     err = json.loads(bridge.dispatch("apply_mask", json.dumps(
@@ -542,3 +581,5 @@ def test_bridge_end_to_end(tmp_path):
     assert back["counts"].isna().sum() > 13          # dead pixels + the spot
     meta, out = call("export_figure", kind="qy", fmt="png", profile=True)
     assert bytes(out["arrays"]["file"][:4]) == b"\x89PNG"
+    meta, out = call("export_figure", kind="alpha_f", fmt="pdf", profile=True, smooth=5)
+    assert bytes(out["arrays"]["file"][:5]) == b"%PDF-"

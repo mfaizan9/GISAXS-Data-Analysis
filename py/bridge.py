@@ -151,6 +151,9 @@ def cmd_init():
         "colormaps": figures.COLORMAPS,
         "default_n_sigma": mask.DEFAULT_N_SIGMA,
         "default_window": spot.DEFAULT_WINDOW,
+        "smoothing_windows": list(gisaxs.SMOOTHING_WINDOWS),
+        "default_smoothing": gisaxs.DEFAULT_SMOOTHING,
+        "zero_colours": list(figures.ZERO_COLOURS),
         "versions": {
             "python": sys.version.split()[0],
             "numpy": np.__version__,
@@ -416,30 +419,33 @@ def cmd_map_data(kind, q_unit="nm-1"):
         arrays={"x": _f32(X.ravel()), "y": _f32(Y.ravel()), "c": _f32(counts)})
 
 
-def _profile_series(kind, q_unit):
+def _profile_series(kind, q_unit, smooth=gisaxs.DEFAULT_SMOOTHING):
+    """(x, mean counts) of one profile, smoothed with a running mean of
+    `smooth` points (1 = as measured)."""
     _require("cut")
     func, label = PROFILES[kind]
-    series = func(S.data, label)
+    series = gisaxs.smooth_profile(func(S.data, label), smooth)
     x = series.index.to_numpy(dtype=float)
     if label in gisaxs.Q_COLUMNS:
         x = x * gisaxs.q_unit_info(q_unit)[0]
     return x, series.to_numpy(dtype=float)
 
 
-def cmd_profile_data(kind, q_unit="nm-1"):
-    x, y = _profile_series(kind, q_unit)
+def cmd_profile_data(kind, q_unit="nm-1", smooth=gisaxs.DEFAULT_SMOOTHING):
+    x, y = _profile_series(kind, q_unit, smooth)
     return _pack({"kind": kind, "n": len(x), "n_gaps": int(np.isnan(y).sum()),
-                  "q_unit": q_unit, "version": S.version},
+                  "smooth": int(smooth), "q_unit": q_unit, "version": S.version},
                  arrays={"x": np.ascontiguousarray(x), "y": np.ascontiguousarray(y)})
 
 
 def cmd_export_figure(kind, fmt="png", log=True, cmap="viridis", vmin=None,
-                      vmax=None, zero_colour="black", preset="publication",
-                      columns=1, q_unit="nm-1", profile=False):
+                      vmax=None, zero_colour="white", preset="publication",
+                      columns=1, q_unit="nm-1", profile=False,
+                      smooth=gisaxs.DEFAULT_SMOOTHING):
     t0 = time.time()
     if profile:
         progress(f"Drawing the {fmt.upper()} figure…")
-        x, y = _profile_series(kind, q_unit)
+        x, y = _profile_series(kind, q_unit, smooth)
         data = figures.profile(x, y, figures.axis_label(kind, q_unit), log=log,
                                preset=preset, columns=int(columns), fmt=fmt)
     else:

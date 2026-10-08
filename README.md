@@ -35,7 +35,8 @@ The page is a sequence of numbered steps that unlock in order:
 11. **Mask the specular spot?** (only if the rod was not masked) with `spot.py`.
 12. **2D maps**: $q_z$ vs $q_y$, $\alpha_f$ vs $\varphi_f$, $y$ vs $x$. Every
     pixel is one point coloured by its counts; no averaging, no regridding.
-13. **1D profiles**: mean counts per pixel vs $\varphi_f$, $q_y$, $\alpha_f$, $q_z$.
+13. **1D profiles**: mean counts per pixel vs $\varphi_f$, $q_y$, $\alpha_f$, $q_z$,
+    smoothed with a centred running mean of 7 points (or 5, or none).
 14. **Download** any plot as PNG or PDF, drawn by matplotlib in a publication
     or presentation style.
 
@@ -187,9 +188,16 @@ is masked (n default 4). A FWHM narrower than one pixel is replaced by one pixel
 
 - **Colour scale.** The data are never transformed: log scaling is applied to
   the display only. Measured zeros (about 96 % of the pixels) are drawn in a
-  dedicated "under" colour (black, or white if selected); NaN pixels (dead or
-  masked) in plotstyle's grey "bad" colour. Defaults: vmin = 1 count, vmax = the
-  maximum of the unmasked data; both can be set by hand.
+  dedicated "under" colour: white by default, so the maps sit on a white
+  background (black can be selected per map); NaN pixels (dead or masked) in
+  plotstyle's grey "bad" colour. Defaults: vmin = 1 count, vmax = the maximum
+  of the unmasked data; both can be set by hand.
+- **Profile smoothing.** Each 1D profile is smoothed with a centred running
+  mean, `profile.rolling(7, center=True, min_periods=1).mean()` by default
+  (5 points or no smoothing can be chosen per plot; the export uses the same
+  setting). `min_periods=1` keeps the end points. Columns or rows that are fully
+  masked stay NaN after smoothing, so a masked rod is still a gap rather than
+  being filled in from its edges.
 - **Colormaps**: viridis (default), cividis, inferno, magma, turbo. The Plotly
   colour scales are sampled from the same matplotlib colormaps, so screen and
   file match.

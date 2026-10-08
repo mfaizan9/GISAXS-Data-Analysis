@@ -276,7 +276,7 @@
 <section class="step locked" id="step-13">
   <header class="step-head"><span class="num">13</span><h2>1D profiles: mean counts per pixel</h2><span class="chip"></span></header>
   <div class="step-body">
-    <p class="muted">Averaged along the detector grid (columns for &phi;<sub>f</sub>, q<sub>y</sub>; rows for &alpha;<sub>f</sub>, q<sub>z</sub>). NaN pixels are ignored; a fully masked column or row is drawn as a gap.</p>
+    <p class="muted">Averaged along the detector grid (columns for &phi;<sub>f</sub>, q<sub>y</sub>; rows for &alpha;<sub>f</sub>, q<sub>z</sub>). NaN pixels are ignored; a fully masked column or row is drawn as a gap. Each profile is then smoothed with a centred running mean, <code>profile.rolling(7, center=True, min_periods=1).mean()</code> (7 or 5 points, or none); masked gaps stay gaps.</p>
     <div class="checks">
       <label class="check"><input type="checkbox" data-profile="phi_f"> vs &phi;<sub>f</sub></label>
       <label class="check"><input type="checkbox" data-profile="qy"> vs q<sub>y</sub></label>
@@ -291,7 +291,7 @@
 <section class="step locked" id="step-14">
   <header class="step-head"><span class="num">14</span><h2>Download plots</h2><span class="chip"></span></header>
   <div class="step-body">
-    <p>Each plot is redrawn with matplotlib in the style chosen at the top (<b>Publication</b>: journal column width; <b>Presentation</b>: 16&nbsp;pt text, thicker lines, 8&nbsp;&times;&nbsp;6&nbsp;in). In 2D maps the point layer is rasterised at 600&nbsp;dpi; axes, labels and colour bar stay vector in the PDF. Colour scale, log setting and q unit follow what is on screen.</p>
+    <p>Each plot is redrawn with matplotlib in the style chosen at the top (<b>Publication</b>: journal column width; <b>Presentation</b>: 16&nbsp;pt text, thicker lines, 8&nbsp;&times;&nbsp;6&nbsp;in). In 2D maps the point layer is rasterised at 600&nbsp;dpi; axes, labels and colour bar stay vector in the PDF. Colour scale, zero colour, log setting, smoothing and q unit follow what is on screen.</p>
     <ul class="hub" id="download-hub"><li class="muted">Tick a plot in steps 4, 12 or 13 to list it here.</li></ul>
     <div class="msg" id="msg-14" hidden></div>
   </div>
@@ -309,7 +309,7 @@
     <div class="card-options">
       <label class="check"><input type="checkbox" class="opt-log" checked> Log scale</label>
       <label>Colormap <select class="opt-cmap"></select></label>
-      <label>Zero counts <select class="opt-zero"><option value="black">black</option><option value="white">white</option></select></label>
+      <label>Zero counts <select class="opt-zero"><option value="white" selected>white</option><option value="black">black</option></select></label>
       <label>v<sub>min</sub> <input type="number" class="opt-vmin" min="0" step="any" placeholder="1"></label>
       <label>v<sub>max</sub> <input type="number" class="opt-vmax" min="0" step="any" placeholder="max"></label>
       <label>Point size <input type="number" class="opt-size" min="0.5" max="40" step="0.5" placeholder="auto"></label>
@@ -327,6 +327,11 @@
     <header class="card-head"><h3 class="card-title"></h3><span class="card-meta muted"></span></header>
     <div class="card-options">
       <label class="check"><input type="checkbox" class="opt-log" checked> Log y-axis</label>
+      <label>Smoothing <select class="opt-smooth">
+        <option value="7" selected>running mean of 7 points</option>
+        <option value="5">running mean of 5 points</option>
+        <option value="1">none</option>
+      </select></label>
     </div>
     <div class="plot plot-profile"></div>
     <footer class="card-foot">
