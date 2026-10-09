@@ -39,9 +39,18 @@ ZERO_COLOURS = {"white": "white", "black": "black"}
 PRESETS = ("publication", "presentation")
 PRESENTATION_SIZE = (8.0, 6.0)
 
+
+class FigureError(ValueError):
+    """A figure cannot be drawn with the options given (worded for the user)."""
+
 # Marker side as a multiple of the pixel pitch, so neighbouring squares
 # touch without leaving hairline gaps in the raster.
 MARKER_OVERLAP = 1.25
+
+# 1D profiles: the measured curve faded underneath, the smoothed one on top,
+# with line widths relative to the preset's lines.linewidth.
+PROFILE_MEASURED = {"color": "0.78", "width": 0.75}
+PROFILE_SMOOTHED = {"color": "0.15", "width": 1.5}
 
 
 def q_unit_tex(q_unit):
@@ -102,6 +111,17 @@ def _to_bytes(fig, fmt):
     return buf.getvalue()
 
 
+def axis_limits(limits, data_lo, data_hi, name="x"):
+    """(lo, hi) from [lo or None, hi or None]; a missing end is the data's."""
+    lo, hi = limits if limits is not None else (None, None)
+    lo = float(data_lo) if lo is None else float(lo)
+    hi = float(data_hi) if hi is None else float(hi)
+    if not lo < hi:
+        raise FigureError(f"{name}-axis: the lower limit ({lo:g}) must be smaller "
+                         f"than the upper limit ({hi:g})")
+    return lo, hi
+
+
 def colour_limits(counts, vmin=None, vmax=None):
     """Default range: vmin = 1 count, vmax = max of the unmasked data."""
     counts = np.asarray(counts, dtype=float)
@@ -118,12 +138,15 @@ def colour_limits(counts, vmin=None, vmax=None):
 def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
                   vmin=None, vmax=None, zero_colour="white",
                   preset="publication", columns=1, fmt="png", pixel=None,
-                  equal_aspect=True):
+                  equal_aspect=True, xlim=None, ylim=None):
     """A scatter plot of every pixel coloured by counts; returns PNG/PDF bytes.
 
-    pixel : (dx, dy) pixel pitch in data units, used to size the markers so
-            they tile the plane.  The scatter layer is rasterized; the axes,
-            labels and colour bar stay vector.
+    pixel      : (dx, dy) pixel pitch in data units, used to size the markers
+                 so they tile the plane.  The scatter layer is rasterized; the
+                 axes, labels and colour bar stay vector.
+    xlim, ylim : [lo, hi] axis limits, either end None for the data's own.
+                 The default colour range still comes from the whole frame,
+                 so a zoomed figure keeps the colours of the full one.
     """
     if cmap not in COLORMAPS:
         raise ValueError(f"colormap must be one of {COLORMAPS}")
@@ -147,16 +170,25 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
             norm = Normalize(vmin=vmin, vmax=vmax)
             shown = c
 
-        fig, ax = plt.subplots(figsize=figure_size(preset, columns, ratio=0.85))
+        finite = c[np.isfinite(c)]
         dx, dy = pixel if pixel is not None else (0.0, 0.0)
-        ax.set_xlim(np.min(x) - dx / 2, np.max(x) + dx / 2)
-        ax.set_ylim(np.min(y) - dy / 2, np.max(y) + dy / 2)
+        x_lo, x_hi = axis_limits(xlim, np.min(x) - dx / 2, np.max(x) + dx / 2, "x")
+        y_lo, y_hi = axis_limits(ylim, np.min(y) - dy / 2, np.max(y) + dy / 2, "y")
+        # Draw only the pixels in view (with one pixel of margin at the edges).
+        view = ((x >= x_lo - dx) & (x <= x_hi + dx)
+                & (y >= y_lo - dy) & (y <= y_hi + dy))
+        if not view.any():
+            raise FigureError("no pixels lie inside the chosen axis limits")
+        x, y, c, shown = x[view], y[view], c[view], shown[view]
+
+        fig, ax = plt.subplots(figsize=figure_size(preset, columns, ratio=0.85))
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(y_lo, y_hi)
         if equal_aspect:
             ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
 
-        finite = c[np.isfinite(c)]
         extend = "min"
         if finite.size and finite.max() > vmax:
             extend = "both"
@@ -185,18 +217,37 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
         return _to_bytes(fig, fmt)
 
 
-def profile(x, y, xlabel, *, log=True, preset="publication", columns=1,
-            fmt="png", ylabel=None):
-    """Mean counts per pixel against one coordinate; NaN draws as a gap."""
+def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
+            columns=1, fmt="png", ylabel=None, xlim=None):
+    """Mean counts per pixel against one coordinate; NaN draws as a gap.
+
+    smoothed : the smoothed profile; the measured one is then drawn faded
+               underneath it.  None draws the measured profile alone.
+    xlim     : [lo, hi] x-axis limits (either end None for the data's own).
+               Only the points inside are drawn, so the y-axis fits them.
+    """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
+    lo, hi = axis_limits(xlim, np.nanmin(x), np.nanmax(x), "x")
+    view = (x >= lo) & (x <= hi)
+    if view.sum() < 2:
+        raise FigureError("fewer than 2 points lie inside the x-axis limits")
     with mpl.rc_context():
         apply_style(preset)
         fig, ax = plt.subplots(figsize=figure_size(preset, columns, ratio=0.75))
-        ax.plot(x, y, "-")
+        width = mpl.rcParams["lines.linewidth"]
+        if smoothed is None:
+            ax.plot(x[view], y[view], "-", color=PROFILE_SMOOTHED["color"],
+                    linewidth=width)
+        else:
+            smoothed = np.asarray(smoothed, dtype=float)
+            ax.plot(x[view], y[view], "-", color=PROFILE_MEASURED["color"],
+                    linewidth=PROFILE_MEASURED["width"] * width, zorder=1)
+            ax.plot(x[view], smoothed[view], "-", color=PROFILE_SMOOTHED["color"],
+                    linewidth=PROFILE_SMOOTHED["width"] * width, zorder=2)
         if log:
             ax.set_yscale("log")
-        ax.set_xlim(np.nanmin(x), np.nanmax(x))
+        ax.set_xlim(lo, hi)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel or axis_label("mean"))
         return _to_bytes(fig, fmt)
@@ -214,4 +265,6 @@ def screen_colours(n=64):
         under[key] = to_hex(plotstyle.intensity_cmap(
             "viridis", zero_colour=colour).get_under())
     bad = to_hex(plotstyle.intensity_cmap("viridis").get_bad())
-    return {"scales": scales, "under": under, "bad": bad}
+    profile = {"measured": to_hex(PROFILE_MEASURED["color"]),
+               "smoothed": to_hex(PROFILE_SMOOTHED["color"])}
+    return {"scales": scales, "under": under, "bad": bad, "profile": profile}

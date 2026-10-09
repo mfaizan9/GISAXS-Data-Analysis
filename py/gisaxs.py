@@ -52,10 +52,9 @@ Q_UNITS = {
 # A counting detector writes -1 for a dead pixel.
 DEAD_PIXEL = -1
 
-# 1D profiles are smoothed with a centred running mean of this many points;
-# the UI offers SMOOTHING_WINDOWS (1 = no smoothing).
+# 1D profiles are smoothed with a centred running mean of this many points by
+# default; any odd number can be typed in the UI (1 = no smoothing).
 DEFAULT_SMOOTHING = 7
-SMOOTHING_WINDOWS = (7, 5, 1)
 
 
 class InputError(ValueError):
@@ -219,6 +218,61 @@ def horizon_y(geom):
     return geom.L * np.tan(np.radians(geom.alpha_i))
 
 
+def specular_y(geom):
+    """Detector height of the specular spot, y = L tan(2 alpha_i) [mm]."""
+    return geom.L * np.tan(np.radians(2.0 * geom.alpha_i))
+
+
+def shift_detector(df, y0):
+    """Move every pixel down by y0 [mm]: y -> y - y0, on a copy.
+
+    For a detector whose direct beam is not at the origin but at (0, y0): after
+    the shift, y is measured from the direct beam again, as the formulas assume.
+    """
+    out = df.copy()
+    out["y"] = out["y"] - float(y0)
+    out.attrs = dict(df.attrs)
+    return out
+
+
+def direct_beam_offset(y_s, geom):
+    """Where the direct beam must be for the specular spot measured at height
+    y_s to sit at alpha_f = alpha_i: y0 = y_s - L tan(2 alpha_i) [mm]."""
+    return float(y_s) - specular_y(geom)
+
+
+def shift_detector(df, y0):
+    """Move every pixel down by y0 [mm]: y -> y - y0, on a copy.
+
+    For a detector whose direct beam is not at the origin but at (0, y0): after
+    the shift, y is measured from the direct beam again, as the formulas assume.
+    """
+    out = df.copy()
+    out["y"] = out["y"] - float(y0)
+    out.attrs = dict(df.attrs)
+    return out
+
+
+def direct_beam_offset(y_s, geom):
+    """Where the direct beam must be for the specular spot measured at height
+    y_s to sit at alpha_f = alpha_i: y0 = y_s - L tan(2 alpha_i) [mm]."""
+    return float(y_s) - specular_y(geom)
+
+
+def alpha_i_from_specular(x_s, y_s, L):
+    """The incidence angle that puts the specular spot where it was measured.
+
+    The specular beam leaves the sample at 2 alpha_i from the incident beam,
+    so 2 alpha_i is the angle between the beam direction X and the spot's
+    position vector r_s = L X + x_s Y + y_s Z:
+
+        alpha_i = atan2(sqrt(x_s^2 + y_s^2), L) / 2      [deg]
+
+    For a spot at x_s = 0 this is the inverse of y = L tan(2 alpha_i).
+    """
+    return 0.5 * float(np.degrees(np.arctan2(np.hypot(x_s, y_s), L)))
+
+
 def horizon_cut(df, geom):
     """Drop every whole detector row whose alpha_f at x = 0 is below 0.
 
@@ -280,10 +334,17 @@ def smooth_profile(profile, window=DEFAULT_SMOOTHING):
     A point that was NaN before (a fully masked row or column) is NaN again
     afterwards, so a masked region stays a gap instead of being filled in from
     its edges.  window = 1 returns the profile unchanged.
+
+    The window must be an odd whole number, so the mean stays centred on each
+    point (an even window would shift peaks by half a point).
     """
+    if float(window) != int(window) or int(window) < 1 or int(window) % 2 == 0:
+        raise ValueError(f"the smoothing window must be an odd whole number of "
+                         f"points (1 = no smoothing), not {window:g}")
     window = int(window)
-    if window < 1 or window % 2 == 0:
-        raise ValueError("the smoothing window must be an odd number of points")
+    if window > len(profile):
+        raise ValueError(f"the smoothing window ({window} points) is longer than "
+                         f"the profile ({len(profile)} points)")
     if window == 1:
         return profile.copy()
     smooth = profile.rolling(window, center=True, min_periods=1).mean()
@@ -478,6 +539,8 @@ def export_header(meta, q_unit="nm-1", when=None):
         "# x_mm, y_mm: position on the detector measured from the direct beam",
         "# nan counts = dead or masked pixel; 0 = a measured zero",
     ]
+    if meta.get("shift_text"):
+        lines.insert(5, f"# Pixels shifted: {meta['shift_text']}")
     if meta.get("mask"):
         lines.append(f"# Mask: {meta['mask']}")
     lines.append(f"# Written: {when.isoformat(timespec='seconds')}")

@@ -213,7 +213,7 @@ def test_profiles_are_means_and_masked_columns_are_gaps():
     assert mask.column_profile(df).iloc[1] == pytest.approx(counts[:, 1].sum())
 
 
-@pytest.mark.parametrize("window", [5, 7])
+@pytest.mark.parametrize("window", [3, 5, 7, 9, 15])
 def test_smoothing_is_the_centred_rolling_mean(window):
     rng = np.random.default_rng(3)
     profile = pd.Series(rng.poisson(20, 60).astype(float),
@@ -236,11 +236,15 @@ def test_smoothing_keeps_masked_gaps():
     assert got.iloc[12] == pytest.approx(np.mean([12, 13, 14, 15]))
 
 
-def test_smoothing_window_one_is_identity_and_even_is_refused():
+def test_smoothing_window_one_is_identity_and_bad_windows_are_refused():
     profile = pd.Series([1.0, np.nan, 3.0, 4.0])
     pd.testing.assert_series_equal(gisaxs.smooth_profile(profile, 1), profile)
-    with pytest.raises(ValueError, match="odd"):
-        gisaxs.smooth_profile(profile, 6)
+    for bad in (6, 0, -3, 2.5):
+        with pytest.raises(ValueError, match="odd whole number"):
+            gisaxs.smooth_profile(profile, bad)
+    with pytest.raises(ValueError, match="longer than the profile"):
+        gisaxs.smooth_profile(profile, 5)
+    assert gisaxs.smooth_profile(profile, 3.0).notna().sum() == 3     # 3.0 is fine
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +390,88 @@ def test_measure_peak_interpolates_half_maximum():
 
 
 # ---------------------------------------------------------------------------
+# the direct-beam offset, found from the data
+# ---------------------------------------------------------------------------
+
+def test_shift_detector_puts_the_direct_beam_at_the_origin():
+    # A detector whose direct beam sits at (0, y0) instead of the origin: the
+    # specular spot then shows y0 above L tan(2 alpha_i).
+    y0 = 1.5
+    df = make_frame(5, 60, 0.1, -0.2, -1.0)
+    shifted = gisaxs.shift_detector(df, y0)
+    np.testing.assert_allclose(shifted["y"], df["y"] - y0)
+    np.testing.assert_allclose(shifted["x"], df["x"])
+    assert shifted.attrs == df.attrs
+    assert np.allclose(df["y"].iloc[:3], -1.0)                  # input untouched
+    # the offset follows from the spot, and removing it puts the spot at alpha_i
+    y_spot = gisaxs.specular_y(TOY) + y0
+    assert gisaxs.direct_beam_offset(y_spot, TOY) == pytest.approx(y0)
+    assert gisaxs.pixel(0.0, y_spot, TOY)["alpha_f"] > TOY.alpha_i
+    assert gisaxs.pixel(0.0, y_spot - y0, TOY)["alpha_f"] == pytest.approx(TOY.alpha_i, abs=1e-12)
+    # the whole conversion is the usual one on the shifted frame
+    got = gisaxs.convert(shifted, TOY)
+    want = gisaxs.pixel(df["x"].to_numpy(), df["y"].to_numpy() - y0, TOY)
+    for name in ("alpha_f", "qz", "kfx"):
+        np.testing.assert_allclose(got[name], want[name])
+
+
+def offset_frame(y_db=1.2, beam=True, clip=False, L=1600.0, alpha_i=0.3,
+                 pitch=0.075):
+    """A raw frame whose direct beam sits at (0, y_db) instead of the origin,
+    with the specular spot at y_db + L tan(2 alpha_i).  clip cuts the lower
+    half of the direct beam off, as a beamstop edge does."""
+    geom = Geometry(L=L, alpha_i=alpha_i, wavelength=0.15418)
+    y_spot = y_db + gisaxs.specular_y(geom)
+    df = make_frame(81, 360, pitch, -3.0, -2.0)
+    X, Y = df["x"].to_numpy(), df["y"].to_numpy()
+    counts = 2.0 + 5000.0 * np.exp(-0.5 * (X / 0.2) ** 2 - 0.5 * ((Y - y_spot) / 0.25) ** 2)
+    if beam:
+        direct = 3000.0 * np.exp(-0.5 * (X / 0.2) ** 2 - 0.5 * ((Y - y_db) / 0.3) ** 2)
+        if clip:
+            direct[Y < y_db + 0.05] = 0.0
+            counts[Y < y_db + 0.05] = 0.0          # the beamstop's shadow
+        counts = counts + direct
+    df["intensity"] = counts
+    return df, geom
+
+
+def test_offset_from_a_clean_direct_beam():
+    df, geom = offset_frame(y_db=1.2)
+    got = spot.find_offset(df, geom)
+    assert got["method"] == "direct" and got["direct"]["ok"]
+    assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
+    assert abs(got["direct"]["error_pixels"]) <= 1
+    assert got["alpha_f_spot"] == pytest.approx(geom.alpha_i, abs=got["pixel_deg"])
+    assert got["spot"]["pixels_off"] == pytest.approx(1.2 / 0.075, abs=0.5)
+
+
+def test_offset_falls_back_to_the_spot_when_the_direct_beam_is_clipped():
+    df, geom = offset_frame(y_db=1.2, clip=True)
+    got = spot.find_offset(df, geom)
+    # the clipped beam's centroid sits too high: the spot then misses alpha_i
+    assert got["direct"] is not None and not got["direct"]["ok"]
+    assert got["direct"]["y0"] > 1.2 + 0.075
+    assert got["method"] == "specular"
+    assert got["y0"] == pytest.approx(got["specular"]["y0"])
+    assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
+    assert got["alpha_f_spot"] == pytest.approx(geom.alpha_i, abs=1e-4)
+
+
+def test_offset_from_the_spot_when_no_direct_beam_shows():
+    df, geom = offset_frame(y_db=1.2, beam=False)
+    got = spot.find_offset(df, geom)
+    assert got["direct"] is None and got["method"] == "specular"
+    assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
+
+
+def test_offset_needs_the_specular_spot():
+    df, geom = offset_frame()
+    df["intensity"] = 2.0                         # nothing to find
+    with pytest.raises(spot.SpotError):
+        spot.find_offset(df, geom)
+
+
+# ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
 
@@ -455,6 +541,26 @@ def test_figures_png_and_pdf(preset):
     out = figures.profile(prof.index, prof.to_numpy(),
                           figures.axis_label("qz", "A-1"), preset=preset, fmt="pdf")
     assert out[:5] == b"%PDF-"
+
+
+def test_figure_axis_limits_and_faded_profile():
+    figures = pytest.importorskip("figures")
+    df = gisaxs.convert(make_frame(5, 6, 0.5, -1.0, 3.0, np.arange(30.0).reshape(6, 5)), TOY)
+    args = (df["phi_f"], df["alpha_f"], df["intensity"], "x", "y")
+    png = figures.intensity_map(*args, pixel=(0.3, 0.3), xlim=[None, 0.5], ylim=[1.0, None])
+    assert png[:4] == b"\x89PNG"
+    with pytest.raises(figures.FigureError, match="smaller"):
+        figures.intensity_map(*args, xlim=[1.0, 0.5])
+    with pytest.raises(figures.FigureError, match="no pixels"):
+        figures.intensity_map(*args, xlim=[50, 60])
+
+    prof = gisaxs.row_profile(df, "alpha_f")
+    smooth = gisaxs.smooth_profile(prof, 5).to_numpy()
+    pdf = figures.profile(prof.index, prof.to_numpy(), "a", smoothed=smooth,
+                          xlim=[None, prof.index[3]], fmt="pdf")
+    assert pdf[:5] == b"%PDF-"
+    with pytest.raises(figures.FigureError, match="fewer than 2"):
+        figures.profile(prof.index, prof.to_numpy(), "a", xlim=[100, 200])
 
 
 def test_screen_colours_match_plotstyle():
@@ -546,7 +652,7 @@ def test_bridge_end_to_end(tmp_path):
     assert meta["summary"]["L"] == pytest.approx(1600.0, abs=0.01)
     meta, _ = call("load_dat", path=str(tmp_path / "d.dat"), name="d.dat")
     assert meta["pixels"] == 1_091_736 and meta["dead"] == 13
-    meta, _ = call("convert")
+    meta, _ = call("convert", correct_offset=False)
     assert meta["steps"]["8"]["pixels"] == 950_900
     assert meta["steps"]["6"]["max_rel_dev"] < 1e-12
 
@@ -560,6 +666,11 @@ def test_bridge_end_to_end(tmp_path):
                                raw.rolling(7, center=True, min_periods=1).mean())
     _, out = call("profile_data", kind="qy", smooth=1)
     np.testing.assert_allclose(out["arrays"]["y"], raw.to_numpy())
+    _, out = call("profile_data", kind="qy", smooth=11)         # any odd number
+    np.testing.assert_allclose(out["arrays"]["y"],
+                               raw.rolling(11, center=True, min_periods=1).mean())
+    bad = json.loads(bridge.dispatch("profile_data", json.dumps({"kind": "qy", "smooth": 6}))["meta"])
+    assert bad.get("user_error") and "odd whole number" in bad["error"]
 
     meta, _ = call("apply_mask", kind="rod", n_sigma=4)
     assert meta["n_masked"] > 0
@@ -567,11 +678,12 @@ def test_bridge_end_to_end(tmp_path):
     unsmoothed, _ = call("profile_data", kind="phi_f", smooth=1)
     assert meta["n_gaps"] == unsmoothed["n_gaps"] > 0     # the rod stays a gap
 
-    # the spot is not where alpha_i predicts in this file (see README)
+    # without the offset correction the spot is not where alpha_i predicts it,
+    # so the window has to follow the peak (which the app always does)
     err = json.loads(bridge.dispatch("apply_mask", json.dumps(
-        {"kind": "spot", "n_sigma": 4, "window": 15}))["meta"])
+        {"kind": "spot", "n_sigma": 4, "window": 15, "follow_peak": False}))["meta"])
     assert "error" in err and "follow the peak" in err["error"]
-    meta, _ = call("apply_mask", kind="spot", n_sigma=4, window=15, follow_peak=True)
+    meta, _ = call("apply_mask", kind="spot", n_sigma=4, window=15)       # follows
     assert meta["n_masked"] > 0
 
     meta, out = call("export_table", which="masked", fmt="csv.gz", q_unit="nm-1")
@@ -583,3 +695,55 @@ def test_bridge_end_to_end(tmp_path):
     assert bytes(out["arrays"]["file"][:4]) == b"\x89PNG"
     meta, out = call("export_figure", kind="alpha_f", fmt="pdf", profile=True, smooth=5)
     assert bytes(out["arrays"]["file"][:5]) == b"%PDF-"
+
+    # profiles carry the measured curve too; figures take axis limits
+    _, out = call("profile_data", kind="alpha_f")
+    assert set(out["arrays"]) == {"x", "y", "raw"}
+    _, out = call("export_figure", kind="alpha_f", fmt="png", profile=True, xlim=[0.0, 0.5])
+    assert bytes(out["arrays"]["file"][:4]) == b"\x89PNG"
+    _, out = call("export_figure", kind="af_pf", fmt="png", xlim=[-0.2, 0.2], ylim=[0.2, 0.6])
+    assert bytes(out["arrays"]["file"][:4]) == b"\x89PNG"
+    bad = json.loads(bridge.dispatch("export_figure", json.dumps(
+        {"kind": "qz_qy", "fmt": "png", "xlim": [1.0, 0.0]}))["meta"])
+    assert bad.get("user_error") and "smaller" in bad["error"]
+
+    # The conversion finds the direct-beam offset by itself: the direct beam
+    # shows at y ~ 3.76 mm but is clipped by the beamstop, so measured from it
+    # the spot misses alpha_i; the spot gives y0 instead
+    pre, _ = call("convert")                                # corrects by default
+    pre = pre["offset"]
+    d = pre["direct"]
+    assert d is not None and d["y0"] == pytest.approx(3.76, abs=0.05)
+    assert not d["ok"] and abs(d["error_pixels"]) > 1
+    assert pre["method"] == "specular"
+    assert pre["y0"] == pytest.approx(pre["spot"]["y"] - pre["spot"]["predicted_y"])
+    assert pre["y0"] == pytest.approx(3.52, abs=0.01)
+    assert pre["spot"]["alpha_f"] == pytest.approx(0.426, abs=1e-3)       # before
+    assert pre["alpha_f_spot"] == pytest.approx(0.299991444658313, abs=1e-4)  # after
+
+    meta, _ = call("convert")                               # the same again
+    assert meta["y0"] == pytest.approx(pre["y0"]) and meta["offset"]["method"] == "specular"
+    assert meta["offset_error"] is None
+    assert meta["alpha_i"] == pytest.approx(0.299991444658313)   # alpha_i untouched
+    assert meta["steps"]["8"]["rows_kept"] == 878
+    # the spot is now where alpha_i predicts it: the default window finds it
+    meta, _ = call("apply_mask", kind="spot", n_sigma=4, window=15)
+    assert meta["alpha0"] == pytest.approx(0.299991444658313, abs=meta["pixel_alpha"])
+    header = gisaxs.export_header(bridge._export_meta(bridge.S.cut), "nm-1")
+    assert any(line.startswith("# Pixels shifted: y_mm = y in the .dat file - 3.5188 mm")
+               and "from the specular spot" in line for line in header)
+
+    meta, _ = call("convert", correct_offset=False)
+    assert meta["y0"] == 0 and meta["offset"] is None
+    assert meta["steps"]["8"]["rows_kept"] == 925
+
+    # no specular spot to be found: converted as it is, with the reason
+    saved = bridge.S.raw
+    bridge.S.raw = saved.assign(intensity=2.0)
+    try:
+        meta, _ = call("convert")
+        assert meta["offset"] is None and meta["y0"] == 0
+        assert "could not find the specular spot" in meta["offset_error"]
+        assert meta["steps"]["8"]["rows_kept"] == 925
+    finally:
+        bridge.S.raw = saved

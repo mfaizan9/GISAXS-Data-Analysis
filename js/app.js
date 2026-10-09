@@ -48,16 +48,45 @@ function capitalise(s) {
   s = String(s || "");
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function storeGet(key) {
-  try { return window.localStorage.getItem(key); } catch (_) { return null; }
+
+// ---- MathJax: symbols and numbers on the page are TeX, written \( ... \) ----
+
+let mathQueue = Promise.resolve();
+
+/** Typeset the maths in these elements (one MathJax call at a time). */
+function typeset(...nodes) {
+  const els = nodes.filter(Boolean);
+  mathQueue = mathQueue.then(async () => {
+    const mj = window.MathJax;
+    if (!mj || !mj.startup || !mj.startup.promise || !mj.typesetPromise) return;
+    await mj.startup.promise;
+    await mj.typesetPromise(els);
+  }).catch((err) => console.warn("MathJax:", err));
+  return mathQueue;
 }
-function storeSet(key, value) {
-  try { window.localStorage.setItem(key, value); } catch (_) { /* private mode */ }
+
+/** Replace an element's HTML and typeset the maths in it. */
+function setMath(el, html) {
+  const mj = window.MathJax;
+  if (mj && mj.typesetClear) mj.typesetClear([el]);
+  el.innerHTML = html;
+  typeset(el);
+}
+
+/** Inline TeX. */
+const tex = (s) => `\\(${s}\\)`;
+
+/** A formatted number (from num, fixed, int, ...) as TeX: 1{,}091{,}736, -38.23.
+    Digits are grouped only from five on (1028, but 12{,}345), as in print. */
+function texNum(text) {
+  return String(text).replace(new RegExp(MINUS, "g"), "-")
+    .replace(/^(-?)(\d),(\d{3})(?=$|\.)/, "$1$2$3")
+    .replace(/,/g, "{,}");
 }
 
 const UNITS = {
-  "nm-1": { factor: 1, html: "nm<sup>−1</sup>", suffix: "nm-1", digits: 4 },
-  "A-1": { factor: 0.1, html: "Å<sup>−1</sup>", suffix: "A-1", digits: 5 },
+  "nm-1": { factor: 1, html: "nm<sup>−1</sup>", tex: String.raw`\mathrm{nm}^{-1}`, suffix: "nm-1", digits: 4 },
+  "A-1": { factor: 0.1, html: "Å<sup>−1</sup>", tex: String.raw`\text{Å}^{-1}`, suffix: "A-1", digits: 5 },
 };
 
 const DATA_DIR = "/home/pyodide/data";
@@ -188,7 +217,6 @@ function step(n) { return $(`#step-${n}`); }
 
 function unlock(n, on = true) {
   step(n).classList.toggle("locked", !on);
-  if (n === 2) $("#geometry").classList.toggle("locked", !on);
 }
 function markDone(n, on = true) {
   step(n).classList.toggle("done", on);
@@ -199,7 +227,7 @@ function markSkipped(n, on = true) {
   if (on) step(n).classList.remove("done");
 }
 function lockFrom(n) {
-  for (let i = n; i <= 14; i++) {
+  for (let i = n; i <= 13; i++) {
     unlock(i, false);
     markDone(i, false);
     markSkipped(i, false);
@@ -230,11 +258,6 @@ function showError(n, err) {
   showMsg(n, message, "error", err.userError ? null : err.traceback);
   setStatus(`Error: ${message.split("\n")[0]}`, "error");
 }
-
-// "Geometry & equations": open the first time, then remember the choice.
-const geometry = $("#geometry");
-geometry.open = storeGet("gisaxs.geometry.open") !== "0";
-geometry.addEventListener("toggle", () => storeSet("gisaxs.geometry.open", geometry.open ? "1" : "0"));
 
 // ---------------------------------------------------------------------------
 // 1. upload
@@ -347,12 +370,11 @@ function resetAnalysis() {
   $("#spot-skipped").hidden = true;
   $("#spot-question-wrap").hidden = false;
   for (const id of ["res-5", "res-6", "res-7", "res-8", "res-10", "res-11"]) $(`#${id}`).innerHTML = "";
-  for (const n of [5, 9, 10, 11, 14]) clearMsg(n);
+  for (const n of [5, 9, 10, 11]) clearMsg(n);
   Object.assign(state, { pro: null, dat: null, conv: null, version: 0, maskKind: "none",
                          rod: null, spot: null, plotsUnlocked: false });
   markDone(1, false);
   lockFrom(2);
-  renderHub();
 }
 
 // ---------------------------------------------------------------------------
@@ -361,44 +383,24 @@ function resetAnalysis() {
 
 function renderPro() {
   const s = state.pro.summary;
-  const u = UNITS[state.qUnit];
-  const pitch = Math.abs(s.pitch_x - s.pitch_y) < 1e-9
-    ? num(s.pitch_x, 6) : `${num(s.pitch_x, 6)} (x), ${num(s.pitch_y, 6)} (y)`;
-  const pixel = Math.abs(s.pixel_mdeg_x - s.pixel_mdeg_y) < 1e-9
-    ? num(s.pixel_mdeg_x, 6) : `${num(s.pixel_mdeg_x, 6)} (x), ${num(s.pixel_mdeg_y, 6)} (y)`;
   const rows = [
-    ["From the .pro file"],
-    ["Detector bins", "n<sub>x</sub> × n<sub>y</sub>", `${s.nx} × ${s.ny}`, ""],
-    ["Detector width × height", "(N<sub>bins</sub> − 1) × pitch", `${num(s.width, 8)} × ${num(s.height, 8)}`, "mm"],
-    ["Detector normal (sample → detector)", "<b>N</b>", `(${s.N.map((v) => num(v, 12)).join(", ")})`, "mm"],
-    ["Foot of the normal on the detector", "u<sub>0</sub>, v<sub>0</sub>", `${num(s.u0, 12)}, ${num(s.v0, 12)}`, "mm"],
-    ["Wavelength", "λ", num(s.wavelength, 10), "nm"],
-    ["Incidence angle", "α<sub>i</sub>", num(s.alpha_i, 15), "deg"],
-    ["Derived"],
-    ["Sample–detector distance", "L = |<b>N</b>|", num(s.L, 10), "mm"],
-    ["Pixel pitch", "width / (n<sub>x</sub> − 1)", pitch, "mm"],
-    ["Wavenumber", "k = 2π / λ", num(s.k * u.factor, 9), u.html],
-    ["Angular size of one pixel", "pitch / L", pixel, "mdeg"],
-    ["Sample horizon on the detector", "y = L tan α<sub>i</sub>", num(state.pro.horizon_y, 7), "mm"],
-    ["Specular spot on the detector", "y = L tan 2α<sub>i</sub>", num(state.pro.specular_y, 7), "mm"],
+    ["Detector bins", String.raw`n_x \times n_y`, String.raw`${s.nx} \times ${s.ny}`, ""],
+    ["Wavelength", String.raw`\lambda`, texNum(num(s.wavelength, 10)), String.raw`\mathrm{nm}`],
+    ["Incidence angle", String.raw`\alpha_i`, texNum(num(s.alpha_i, 6)), String.raw`\mathrm{deg}`],
+    ["Sample–detector distance", String.raw`L = |\mathbf N|`, String(Math.round(s.L)), String.raw`\mathrm{mm}`],
   ];
-  $("#pro-table").innerHTML =
+  setMath($("#pro-table"),
     "<thead><tr><th>Quantity</th><th>Symbol</th><th>Value</th><th>Unit</th></tr></thead><tbody>" +
-    rows.map((r) => r.length === 1
-      ? `<tr class="group"><td colspan="4">${r[0]}</td></tr>`
-      : `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("") +
-    "</tbody>";
-
-  const special = { beam: "x = 0, y = 0 mm",
-                    horizon: `y = ${num(state.pro.horizon_y, 6)} mm`,
-                    specular: `x = 0, y = ${num(state.pro.specular_y, 6)} mm` };
-  $$("[data-special]").forEach((td) => { td.textContent = special[td.dataset.special]; });
+    rows.map(([q, sym, val, unit]) =>
+      `<tr><td>${q}</td><td>${tex(sym)}</td><td>${tex(val)}</td><td>${unit ? tex(unit) : ""}</td></tr>`).join("") +
+    "</tbody>");
 }
 
 // ---------------------------------------------------------------------------
 // 3. raw data
 // ---------------------------------------------------------------------------
 
+/** A df.head() table: plain text, as pandas prints it. */
 function renderHead(table, head) {
   table.innerHTML =
     "<thead><tr><th></th>" + head.columns.map((c) => `<th>${esc(c)}</th>`).join("") + "</tr></thead><tbody>" +
@@ -411,22 +413,18 @@ function facts(list) {
   return list.map(([dt, dd, cls]) => `<div><dt>${dt}</dt><dd${cls ? ` class="${cls}"` : ""}>${dd}</dd></div>`).join("");
 }
 
+/** [lo, hi] mm, in TeX. */
+function texRange(range, digits = 6) {
+  return tex(String.raw`[${texNum(num(range[0], digits))},\ ${texNum(num(range[1], digits))}]\ \mathrm{mm}`);
+}
+
 function renderDat() {
   const d = state.dat;
-  const ordered = d.order.startsWith("row-major");
-  const variance = { present: "present", "all zero": "present, all zero", absent: "absent" }[d.variance];
-  $("#dat-facts").innerHTML = facts([
-    ["Pixels", int(d.pixels)],
-    ["Grid (from the header)", `${int(d.ny)} rows × ${int(d.nx)} columns`],
-    ["Pixel order", ordered ? "✓ row-major <small>y ascending (bottom row first), x ascending in a row</small>"
-                            : `re-sorted <small>${esc(d.order)}</small>`, ordered ? "ok" : ""],
-    ["Dead pixels → NaN", `${int(d.dead)} <small>(${int(d.dead_minus_one)} written as −1)</small>`],
-    ["Zero-count pixels", `${int(d.zeros)} <small>(${pct(d.zeros, d.pixels)})</small>`],
-    ["Largest count", int(d.max)],
-    ["Variance column", variance],
-    ["x range", `${num(d.x_range[0], 6)} … ${num(d.x_range[1], 6)} mm`],
-    ["y range", `${num(d.y_range[0], 6)} … ${num(d.y_range[1], 6)} mm`],
-  ]);
+  setMath($("#dat-facts"), facts([
+    ["Pixels", tex(texNum(int(d.pixels)))],
+    ["x range", texRange(d.x_range)],
+    ["y range", texRange(d.y_range)],
+  ]));
   renderHead($("#dat-head"), d.head);
 }
 
@@ -436,23 +434,26 @@ function renderDat() {
 
 $("#btn-convert").addEventListener("click", async (event) => {
   const button = event.currentTarget;
-  button.disabled = true;
   clearMsg(5);
+  button.disabled = true;
   const token = state.loadToken;
   try {
+    // The direct-beam offset is always found and corrected (spot.find_offset).
     const r = await py("convert", {}, [], "Converting…");
     if (token !== state.loadToken) return;
     state.conv = r.meta;
     state.version = r.meta.version;
     state.maskKind = "none";
+    if (r.meta.offset_error) {
+      showMsg(5, `${capitalise(r.meta.offset_error)}\nThe detector was used as it is.`, "warn");
+    }
     renderConversion();
     for (const n of [5, 6, 7, 8]) { unlock(n); markDone(n); }
     unlock(9);
     unlock(10);
     await refreshConvertedHead();
     markDone(9);
-    const s8 = r.meta.steps["8"];
-    idle(`Converted ${int(state.dat.pixels)} pixels; ${int(s8.pixels)} lie above the sample horizon.`);
+    idle(`Converted ${int(state.dat.pixels)} pixels; ${int(r.meta.steps["8"].pixels)} lie above the sample horizon.`);
   } catch (err) {
     button.disabled = false;
     showError(5, err);
@@ -463,42 +464,40 @@ function rangeTable(rows) {
   return `<div class="table-wrap"><table class="plain"><thead><tr><th>column</th><th>quantity</th>` +
     `<th>minimum</th><th>maximum</th><th>unit</th></tr></thead><tbody>` +
     rows.map(([col, label, range, unit, factor = 1, digits = 7]) =>
-      `<tr><td><code>${col}</code></td><td>${label}</td><td>${num(range[0] * factor, digits)}</td>` +
-      `<td>${num(range[1] * factor, digits)}</td><td>${unit}</td></tr>`).join("") +
+      `<tr><td><code>${col}</code></td><td>${tex(label)}</td><td>${tex(texNum(num(range[0] * factor, digits)))}</td>` +
+      `<td>${tex(texNum(num(range[1] * factor, digits)))}</td><td>${tex(unit)}</td></tr>`).join("") +
     "</tbody></table></div>";
 }
 
 function renderConversion() {
   const st = state.conv.steps;
   const u = UNITS[state.qUnit];
-  $("#res-5").innerHTML = `<p class="note">Added 2 columns for all ${int(state.dat.pixels)} pixels.</p>` +
-    rangeTable([["phi_f", "φ<sub>f</sub>", st["5"].phi_f, "deg"],
-                ["alpha_f", "α<sub>f</sub>", st["5"].alpha_f, "deg"]]);
-  $("#res-6").innerHTML = `<p class="note">Added 3 columns. Check: |<b>k</b><sub>f</sub>| = k = ` +
-    `${num(st["6"].k * u.factor, 9)} ${u.html} for every pixel (largest relative deviation ` +
-    `${st["6"].max_rel_dev.toExponential(1).replace("-", MINUS)}).</p>` +
-    rangeTable(["kfx", "kfy", "kfz"].map((c, i) =>
-      [c, `k<sub>f${"xyz"[i]}</sub>`, st["6"][c], u.html, u.factor]));
-  $("#res-7").innerHTML = `<p class="note">Added 3 columns.</p>` +
-    rangeTable(["qx", "qy", "qz"].map((c, i) =>
-      [c, `q<sub>${"xyz"[i]}</sub>`, st["7"][c], u.html, u.factor]));
+  const deg = String.raw`\mathrm{deg}`;
+  setMath($("#res-5"), `<p class="note">Added 2 columns for all ${tex(texNum(int(state.dat.pixels)))} pixels.</p>` +
+    rangeTable([["phi_f", String.raw`\varphi_f`, st["5"].phi_f, deg],
+                ["alpha_f", String.raw`\alpha_f`, st["5"].alpha_f, deg]]));
+  const dev = st["6"].max_rel_dev.toExponential(1).split("e");
+  setMath($("#res-6"), `<p class="note">Added 3 columns. Check: ${tex(String.raw`|\mathbf k_f| = k = ` +
+      String.raw`${texNum(num(st["6"].k * u.factor, 9))}\ ${u.tex}`)} for every pixel (largest relative deviation ` +
+    `${tex(String.raw`${dev[0]} \times 10^{${Number(dev[1])}}`)}).</p>` +
+    rangeTable(["kfx", "kfy", "kfz"].map((c, i) => [c, `k_{f${"xyz"[i]}}`, st["6"][c], u.tex, u.factor])));
+  setMath($("#res-7"), `<p class="note">Added 3 columns.</p>` +
+    rangeTable(["qx", "qy", "qz"].map((c, i) => [c, `q_${"xyz"[i]}`, st["7"][c], u.tex, u.factor])));
   const s8 = st["8"];
-  $("#res-8").innerHTML = `<dl class="facts">` + facts([
-    ["Sample horizon", `y = L tan α<sub>i</sub> = ${num(s8.horizon_y, 6)} mm`],
-    ["Rows dropped", `${int(s8.rows_dropped)} <small>of ${int(s8.rows_before)}</small>`],
-    ["Rows kept", int(s8.rows_kept)],
-    ["Pixels kept", `${int(s8.rows_kept)} × ${int(s8.nx)} = ${int(s8.pixels)}`, "ok"],
-    ["Lowest kept row", `y = ${num(s8.first_row_y, 6)} mm <small>α<sub>f,row</sub> = ${signed(s8.first_row_alpha, 5)}°</small>`],
-    ["Highest dropped row", s8.last_dropped_y == null ? "none"
-      : `y = ${num(s8.last_dropped_y, 6)} mm <small>α<sub>f,row</sub> = ${signed(s8.last_dropped_alpha, 5)}°</small>`],
-  ]) + "</dl>";
+  setMath($("#res-8"), `<dl class="facts">` + facts([
+    [`Sample horizon, ${tex(String.raw`y = L\tan\alpha_i`)}`, tex(String.raw`${texNum(num(s8.horizon_y, 6))}\ \mathrm{mm}`)],
+    ["Rows dropped", tex(String.raw`${texNum(int(s8.rows_dropped))}\ \text{of}\ ${texNum(int(s8.rows_before))}`)],
+    ["Rows kept", tex(texNum(int(s8.rows_kept)))],
+    ["Pixels kept", tex(String.raw`${texNum(int(s8.rows_kept))} \times ${texNum(int(s8.nx))} = ${texNum(int(s8.pixels))}`)],
+  ]) + "</dl>");
 }
 
 async function refreshConvertedHead() {
   const r = await py("table_head", { which: "converted", q_unit: state.qUnit }, [], "Preparing the table…");
   renderHead($("#conv-head"), r.meta.head);
-  $("#conv-summary").textContent =
-    `${int(r.meta.pixels)} pixels (${int(r.meta.ny)} rows × ${int(r.meta.nx)} columns), 12 columns. First rows:`;
+  setMath($("#conv-summary"),
+    `${tex(texNum(int(r.meta.pixels)))} pixels (${tex(String.raw`${texNum(int(r.meta.ny))} \times ${texNum(int(r.meta.nx))}`)}), ` +
+    `12 columns. First few rows:`);
 }
 
 // ---------------------------------------------------------------------------
@@ -545,11 +544,11 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-function maskedDownloads(stepNo) {
-  return `<div class="actions"><span>Masked table:</span>` +
+function maskedDownloads(stepNo, nMasked) {
+  return `<div class="actions"><span>${int(nMasked)} pixels masked. Masked table:</span>` +
     `<button type="button" data-download-table="masked" data-fmt="csv.gz" data-msg="${stepNo}">Download .csv.gz</button>` +
     `<button type="button" data-download-table="masked" data-fmt="csv" data-msg="${stepNo}">Download plain .csv</button>` +
-    `<span class="muted">Same columns as step 9; masked pixels are <code>nan</code> and the header records the mask.</span></div>`;
+    `</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +579,7 @@ async function applyMask(kind, stepNo) {
     } else if (kind === "spot") {
       args.n_sigma = readNumber($("#spot-nsigma"), { min: 0, name: "nσ" });
       args.window = readNumber($("#spot-window"), { min: 2, name: "The window W" });
-      args.follow_peak = $("#spot-follow").checked;
+      args.follow_peak = true;          // always: the point is to mask the spot
     }
   } catch (err) {
     showMsg(stepNo, err.message);
@@ -606,45 +605,18 @@ async function applyMask(kind, stepNo) {
   }
 }
 
-function reportTable(rows) {
-  return `<div class="table-wrap"><table class="plain"><tbody>` +
-    rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("") + "</tbody></table></div>";
-}
-
 function renderRodReport(m) {
-  const px = m.pixel;
-  $("#res-10").innerHTML = reportTable([
-    ["Rod centre φ<sub>f</sub>", `${signed(m.centre, 5)}° <span class="muted">(${signed(m.centre / px, 1)} pixels from φ<sub>f</sub> = 0; tallest column at ${signed(m.tallest, 5)}°)</span>`],
-    ["FWHM", `${fixed(m.fwhm, 5)}° <span class="muted">(${fixed(m.fwhm / px, 1)} pixels of ${fixed(px * 1000, 3)} mdeg)</span>`],
-    ["σ = FWHM / 2.3548", `${fixed(m.sigma, 5)}°`],
-    ["Masked band", `${signed(m.band[0], 5)}° … ${signed(m.band[1], 5)}° <span class="muted">(±${fixed(m.half_width, 5)}° = ${m.fixed ? "fixed half-width" : `${num(m.n_sigma, 4)} σ`})</span>`],
-    ["Pixels masked", `${int(m.n_masked)} <span class="muted">(${pct(m.n_masked, m.pixels)} of the frame; intensity and variance set to NaN)</span>`],
-    ["Tallest column, summed counts", `${int(m.peak_height)} before → ${int(m.left_over)} after <span class="muted">(above the background of ${int(m.background)} per column)</span>`],
-    ["Diffuse beside the mask", m.diffuse == null ? "–" : `${int(m.diffuse)} per column <span class="muted">(the leftover should be near this)</span>`],
-  ]) + maskedDownloads(10);
+  $("#res-10").innerHTML = maskedDownloads(10, m.n_masked);
 }
 
 function renderSpotReport(m) {
-  const moved = m.follow_steps
-    ? ` <span class="muted">(moved ${m.follow_steps} time${m.follow_steps > 1 ? "s" : ""} to follow the peak)</span>` : "";
-  const hp = m.phi_profile, va = m.alpha_profile;
-  const onePixel = (p) => p.fwhm_was_below_pixel ? ' <span class="muted">(narrower than a pixel: one pixel used)</span>' : "";
-  $("#res-11").innerHTML = reportTable([
-    ["Predicted position", `φ<sub>f</sub> = 0, α<sub>f</sub> = α<sub>i</sub> = ${fixed(m.predicted[1], 5)}°`],
-    ["Window", `±${num(m.window_pixels, 4)} pixels = ±${fixed(m.half_width_phi, 5)}° (φ<sub>f</sub>) × ±${fixed(m.half_width_alpha, 5)}° (α<sub>f</sub>), centred on (${signed(m.window_centre[0], 5)}°, ${fixed(m.window_centre[1], 5)}°)${moved}`],
-    ["Spot centre φ<sub>0</sub>, α<sub>0</sub>", `${signed(m.phi0, 5)}°, ${fixed(m.alpha0, 5)}° <span class="muted">(α<sub>0</sub> − α<sub>i</sub> = ${signed(m.alpha0 - m.predicted[1], 5)}° = ${signed((m.alpha0 - m.predicted[1]) / m.pixel_alpha, 1)} pixels)</span>`],
-    ["FWHM along φ<sub>f</sub>, α<sub>f</sub>", `${fixed(m.fwhm_phi, 5)}°${onePixel(hp)}, ${fixed(m.fwhm_alpha, 5)}°${onePixel(va)}`],
-    ["σ<sub>φ</sub>, σ<sub>α</sub>", `${fixed(m.sigma_phi, 5)}°, ${fixed(m.sigma_alpha, 5)}°`],
-    ["Background, height (mean counts)", `φ<sub>f</sub> profile: ${num(hp.background, 4)}, ${num(hp.height, 5)}; α<sub>f</sub> profile: ${num(va.background, 4)}, ${num(va.height, 5)}`],
-    ["Ellipse half-axes", `${fixed(m.half_axis_phi, 5)}° × ${fixed(m.half_axis_alpha, 5)}° <span class="muted">(${num(m.n_sigma, 4)} σ)</span>`],
-    ["Pixels masked", `${int(m.n_masked)} <span class="muted">(${pct(m.n_masked, m.pixels)} of the frame; intensity and variance set to NaN)</span>`],
-  ]) + maskedDownloads(11);
+  $("#res-11").innerHTML = maskedDownloads(11, m.n_masked);
 }
 
 function unlockPlots() {
   if (state.plotsUnlocked) return;
   state.plotsUnlocked = true;
-  for (const n of [12, 13, 14]) unlock(n);
+  for (const n of [12, 13]) unlock(n);
 }
 
 async function onRodAnswer(value) {
@@ -697,10 +669,8 @@ $$('input[name="spot"]').forEach((r) => r.addEventListener("change", () => onSpo
 $("#rod-apply").addEventListener("click", () => onRodAnswer("yes"));
 $("#spot-apply").addEventListener("click", () => onSpotAnswer("yes"));
 for (const [id, handler] of [["rod-nsigma", () => onRodAnswer("yes")], ["rod-halfwidth", () => onRodAnswer("yes")],
-                             ["spot-nsigma", () => onSpotAnswer("yes")], ["spot-window", () => onSpotAnswer("yes")],
-                             ["spot-follow", () => onSpotAnswer("yes")]]) {
+                             ["spot-nsigma", () => onSpotAnswer("yes")], ["spot-window", () => onSpotAnswer("yes")]]) {
   $(`#${id}`).addEventListener("keydown", (e) => { if (e.key === "Enter") handler(); });
-  if (id === "spot-follow") $(`#${id}`).addEventListener("change", handler);
 }
 
 // ---------------------------------------------------------------------------
@@ -714,21 +684,25 @@ const PLOT_CONFIG = {
   modeBarButtonsToRemove: ["select2d", "lasso2d", "toImage", "autoScale2d"],
   doubleClick: "reset",
 };
-const FONT = { family: "system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif", size: 12, color: "#1b2330" };
+const FONT = { family: "'Source Sans 3', 'Segoe UI', system-ui, Arial, sans-serif", size: 15, color: "#18202c" };
 const INK = "#1b2330";
-const ACCENT = "#1d4f91";
 
+/* An axis: its Plotly title (TeX between $...$, rendered by MathJax), its
+   label on the page (TeX), and its hover label (HTML: Plotly hover text
+   cannot hold TeX). */
 function axisDef(name) {
   const u = UNITS[state.qUnit];
   const defs = {
-    x: { title: "x (mm)", label: "x", fmt: ".3f", unit: " mm" },
-    y: { title: "y (mm)", label: "y", fmt: ".3f", unit: " mm" },
-    phi_f: { title: "φ<sub>f</sub> (deg)", label: "φ<sub>f</sub>", fmt: ".4f", unit: "°" },
-    alpha_f: { title: "α<sub>f</sub> (deg)", label: "α<sub>f</sub>", fmt: ".4f", unit: "°" },
-    qy: { title: `q<sub>y</sub> (${u.html})`, label: "q<sub>y</sub>", fmt: `.${u.digits}f`, unit: ` ${u.html}` },
-    qz: { title: `q<sub>z</sub> (${u.html})`, label: "q<sub>z</sub>", fmt: `.${u.digits}f`, unit: ` ${u.html}` },
+    x: { tex: "x", unit: String.raw`\mathrm{mm}`, label: "x", fmt: ".3f", hunit: " mm" },
+    y: { tex: "y", unit: String.raw`\mathrm{mm}`, label: "y", fmt: ".3f", hunit: " mm" },
+    phi_f: { tex: String.raw`\varphi_f`, unit: String.raw`\mathrm{deg}`, label: "φ<sub>f</sub>", fmt: ".4f", hunit: "°" },
+    alpha_f: { tex: String.raw`\alpha_f`, unit: String.raw`\mathrm{deg}`, label: "α<sub>f</sub>", fmt: ".4f", hunit: "°" },
+    qy: { tex: "q_y", unit: u.tex, label: "q<sub>y</sub>", fmt: `.${u.digits}f`, hunit: ` ${u.html}` },
+    qz: { tex: "q_z", unit: u.tex, label: "q<sub>z</sub>", fmt: `.${u.digits}f`, hunit: ` ${u.html}` },
   };
-  return defs[name];
+  const d = defs[name];
+  const full = String.raw`${d.tex}\ (${d.unit})`;
+  return Object.assign(d, { title: `$${full}$`, page: tex(full) });
 }
 
 function axisStyle(title, extra = {}) {
@@ -742,16 +716,24 @@ function axisStyle(title, extra = {}) {
 }
 
 const MAPS = {
-  raw: { title: "Raw intensity map: y vs x (full detector)", x: "x", y: "y", slug: "raw_y-vs-x", container: "#cards-raw" },
-  qz_qy: { title: "q<sub>z</sub> vs q<sub>y</sub>", x: "qy", y: "qz", slug: "qz-vs-qy", container: "#cards-maps" },
-  af_pf: { title: "α<sub>f</sub> vs φ<sub>f</sub>", x: "phi_f", y: "alpha_f", slug: "alphaf-vs-phif", container: "#cards-maps" },
-  y_x: { title: "y vs x (above the horizon)", x: "x", y: "y", slug: "y-vs-x", container: "#cards-maps" },
+  raw: { title: String.raw`Raw intensity map: \(y\) vs \(x\) (full detector)`, plain: "raw y vs x",
+         x: "x", y: "y", slug: "raw_y-vs-x", container: "#cards-raw" },
+  qz_qy: { title: String.raw`\(q_z\) vs \(q_y\)`, plain: "qz vs qy",
+           x: "qy", y: "qz", slug: "qz-vs-qy", container: "#cards-maps" },
+  af_pf: { title: String.raw`\(\alpha_f\) vs \(\varphi_f\)`, plain: "alpha_f vs phi_f",
+           x: "phi_f", y: "alpha_f", slug: "alphaf-vs-phif", container: "#cards-maps" },
+  y_x: { title: String.raw`\(y\) vs \(x\) (above the horizon)`, plain: "y vs x",
+         x: "x", y: "y", slug: "y-vs-x", container: "#cards-maps" },
 };
 const PROFILES = {
-  phi_f: { title: "Mean counts per pixel vs φ<sub>f</sub>", axis: "phi_f", slug: "profile-vs-phif", along: "detector columns" },
-  qy: { title: "Mean counts per pixel vs q<sub>y</sub>", axis: "qy", slug: "profile-vs-qy", along: "detector columns" },
-  alpha_f: { title: "Mean counts per pixel vs α<sub>f</sub>", axis: "alpha_f", slug: "profile-vs-alphaf", along: "detector rows" },
-  qz: { title: "Mean counts per pixel vs q<sub>z</sub>", axis: "qz", slug: "profile-vs-qz", along: "detector rows" },
+  phi_f: { title: String.raw`Mean counts per pixel vs \(\varphi_f\)`, plain: "profile vs phi_f",
+           axis: "phi_f", slug: "profile-vs-phif", along: "detector columns" },
+  qy: { title: String.raw`Mean counts per pixel vs \(q_y\)`, plain: "profile vs qy",
+        axis: "qy", slug: "profile-vs-qy", along: "detector columns" },
+  alpha_f: { title: String.raw`Mean counts per pixel vs \(\alpha_f\)`, plain: "profile vs alpha_f",
+             axis: "alpha_f", slug: "profile-vs-alphaf", along: "detector rows" },
+  qz: { title: String.raw`Mean counts per pixel vs \(q_z\)`, plain: "profile vs qz",
+        axis: "qz", slug: "profile-vs-qz", along: "detector rows" },
 };
 
 const cards = new Map();
@@ -770,14 +752,73 @@ class Card {
     this.data = null;
     this.seq = 0;
     this.drawn = false;
+    this.limitAxes = $(".opt-ymin", this.el) ? ["x", "y"] : ["x"];
     $$(".dl button", this.el).forEach((b) => b.addEventListener("click", () => exportCard(this, b.dataset.fmt, b)));
+    $(".opt-full", this.el).addEventListener("click", () => {
+      this.clearLimits();
+      if (this.data) this.draw();
+    });
     $(container).append(this.el);
+    typeset($(".card-options", this.el));
+  }
+
+  /** Axis limits typed in the card: {x: [lo, hi], y: [lo, hi]}, null = the data's own. */
+  limits() {
+    const out = {};
+    for (const axis of this.limitAxes) {
+      const lo = readNumber($(`.opt-${axis}min`, this.el), { optional: true, name: `The ${axis}-axis "from"` });
+      const hi = readNumber($(`.opt-${axis}max`, this.el), { optional: true, name: `The ${axis}-axis "to"` });
+      if (lo != null && hi != null && lo >= hi) throw new Error(`${axis}-axis limits: "from" must be smaller than "to".`);
+      out[axis] = [lo, hi];
+    }
+    return out;
+  }
+
+  clearLimits() {
+    for (const axis of this.limitAxes) {
+      $(`.opt-${axis}min`, this.el).value = "";
+      $(`.opt-${axis}max`, this.el).value = "";
+    }
+  }
+
+  /** A mouse zoom fills in the limit boxes, so the download shows what the
+      screen shows; zooming back out to the full range empties them. */
+  syncLimits(event) {
+    for (const axis of this.limitAxes) {
+      const key = `${axis}axis`;
+      let range = event[`${key}.range`] || (event[`${key}.range[0]`] !== undefined
+        ? [event[`${key}.range[0]`], event[`${key}.range[1]`]] : null);
+      if (event[`${key}.autorange`]) range = "auto";
+      if (!range) continue;
+      const lo = $(`.opt-${axis}min`, this.el), hi = $(`.opt-${axis}max`, this.el);
+      const full = this.fullRange(axis);
+      const tol = full ? 1e-6 * Math.abs(full[1] - full[0]) : 0;
+      if (range === "auto" || (full && Math.abs(range[0] - full[0]) <= tol && Math.abs(range[1] - full[1]) <= tol)) {
+        lo.value = "";
+        hi.value = "";
+      } else {
+        lo.value = String(Number(Number(range[0]).toPrecision(6)));
+        hi.value = String(Number(Number(range[1]).toPrecision(6)));
+      }
+    }
+  }
+
+  /** Limits typed in one q unit, converted when the unit changes. */
+  rescaleLimits(factor) {
+    for (const axis of this.qAxes || []) {
+      for (const end of ["min", "max"]) {
+        const input = $(`.opt-${axis}${end}`, this.el);
+        if (input.value.trim() !== "" && Number.isFinite(Number(input.value))) {
+          input.value = String(Number((Number(input.value) * factor).toPrecision(6)));
+        }
+      }
+    }
   }
 
   async refresh() {
     const seq = ++this.seq;
-    const key = this.currentDataKey();
     try {
+      const key = this.currentDataKey();
       if (key !== this.dataKey) {
         this.plot.classList.add("loading");
         const r = await this.fetch();
@@ -799,6 +840,14 @@ class Card {
     return `${stem()}_${this.slug}.${fmt}`;
   }
 
+  /** A TeX label in the card, typeset again only when it changes. */
+  setLabel(selector, html) {
+    const el = $(selector, this.el);
+    if (el.dataset.html === html) return;
+    el.dataset.html = html;
+    setMath(el, html);
+  }
+
   destroy() {
     this.seq += 1;
     if (window.Plotly) Plotly.purge(this.plot);
@@ -815,8 +864,9 @@ class MapCard extends Card {
     this.slug = def.slug;
     this.isProfile = false;
     this.usesQ = def.x === "qy";
-    this.label = def.title;
-    $(".card-title", this.el).innerHTML = def.title;
+    this.qAxes = this.usesQ ? ["x", "y"] : [];
+    this.label = def.plain;
+    setMath($(".card-title", this.el), def.title);
     const cmap = $(".opt-cmap", this.el);
     cmap.innerHTML = state.init.colormaps.map((c) => `<option value="${c}">${c}</option>`).join("");
     for (const input of $$(".card-options input, .card-options select", this.el)) {
@@ -848,7 +898,17 @@ class MapCard extends Card {
 
   exportArgs() {
     const o = this.options();
-    return { log: o.log, cmap: o.cmap, vmin: o.vmin, vmax: o.vmax, zero_colour: o.zero };
+    const lim = this.limits();
+    return { log: o.log, cmap: o.cmap, vmin: o.vmin, vmax: o.vmax, zero_colour: o.zero,
+             xlim: lim.x, ylim: lim.y };
+  }
+
+  /** The axis range shown with no limits: the data plus half a pixel. */
+  fullRange(axis) {
+    if (!this.data) return null;
+    const m = this.data.meta;
+    return axis === "x" ? [m.x_range[0] - m.dx / 2, m.x_range[1] + m.dx / 2]
+                        : [m.y_range[0] - m.dy / 2, m.y_range[1] + m.dy / 2];
   }
 
   autoSize() {
@@ -867,9 +927,10 @@ class MapCard extends Card {
   }
 
   draw() {
-    let o;
+    let o, lim;
     try {
       o = this.options();
+      lim = this.limits();
     } catch (err) {
       this.note.textContent = err.message;
       return;
@@ -907,7 +968,7 @@ class MapCard extends Card {
     }
 
     const ax = axisDef(this.def.x), ay = axisDef(this.def.y);
-    const where = `${ax.label} = %{x:${ax.fmt}}${ax.unit}<br>${ay.label} = %{y:${ay.fmt}}${ay.unit}`;
+    const where = `${ax.label} = %{x:${ax.fmt}}${ax.hunit}<br>${ay.label} = %{y:${ay.fmt}}${ay.hunit}`;
     const size = o.size || this.autoSize();
     const marker = (extra) => Object.assign({ size, symbol: "square", line: { width: 0 } }, extra);
 
@@ -966,23 +1027,30 @@ class MapCard extends Card {
       hovertemplate: `${where}<br>I = %{customdata:.6~r} cts<extra></extra>`,
     });
 
-    const pad = (r, d) => [r[0] - d / 2, r[1] + d / 2];
+    this.setLabel(".lim-x", ax.page);
+    this.setLabel(".lim-y", ay.page);
+    const fullX = this.fullRange("x"), fullY = this.fullRange("y");
+    const range = (l, full) => [l[0] == null ? full[0] : l[0], l[1] == null ? full[1] : l[1]];
     const layout = {
       font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#fff",
       margin: { l: 10, r: 10, t: 36, b: 10 },
-      xaxis: axisStyle(ax.title, { range: pad(meta.x_range, meta.dx), constrain: "domain" }),
-      yaxis: axisStyle(ay.title, { range: pad(meta.y_range, meta.dy), constrain: "domain",
+      xaxis: axisStyle(ax.title, { range: range(lim.x, fullX), constrain: "domain" }),
+      yaxis: axisStyle(ay.title, { range: range(lim.y, fullY), constrain: "domain",
                                    scaleanchor: "x", scaleratio: 1 }),
       legend: { orientation: "h", x: 0, xanchor: "left", y: 1.0, yanchor: "bottom",
-                itemsizing: "constant", font: { size: 11 } },
+                itemsizing: "constant", font: { size: 13 } },
       hovermode: "closest",
       hoverlabel: { font: { family: FONT.family, size: 12 } },
-      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}`,
+      // A new typed limit replaces any mouse zoom; otherwise the zoom stays.
+      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${JSON.stringify(lim)}`,
     };
 
     Plotly.react(this.plot, traces, layout, PLOT_CONFIG).then(() => {
       if (!this.sizeListener) {
-        this.sizeListener = () => this.resize();
+        this.sizeListener = (event) => {
+          this.syncLimits(event);
+          this.resize();
+        };
         this.plot.on("plotly_relayout", this.sizeListener);
       }
       this.resize();
@@ -1020,22 +1088,43 @@ class ProfileCard extends Card {
     this.slug = def.slug;
     this.isProfile = true;
     this.usesQ = kind === "qy" || kind === "qz";
-    this.label = def.title;
-    $(".card-title", this.el).innerHTML = def.title;
-    $(".opt-log", this.el).addEventListener("change", () => { if (this.data) this.draw(); });
+    this.qAxes = this.usesQ ? ["x"] : [];
+    this.label = def.plain;
+    setMath($(".card-title", this.el), def.title);
+    for (const cls of [".opt-log", ".opt-xmin", ".opt-xmax"]) {
+      $(cls, this.el).addEventListener("change", () => { if (this.data) this.draw(); });
+    }
+    this.zoomListener = null;
     const smooth = $(".opt-smooth", this.el);
     smooth.value = String(state.init.default_smoothing);
     // Smoothing is done in Python (gisaxs.smooth_profile), the same code the
     // exported figure uses, so a change re-fetches this one small profile.
-    smooth.addEventListener("change", () => this.refresh());
+    smooth.addEventListener("change", () => {
+      try {
+        this.smoothing();
+      } catch (err) {
+        this.note.textContent = err.message;
+        return;
+      }
+      this.refresh();
+    });
   }
 
+  /** The smoothing window typed in the card: an odd whole number, 1 = none. */
   smoothing() {
-    return Number($(".opt-smooth", this.el).value);
+    const text = $(".opt-smooth", this.el).value.trim();
+    const n = Number(text);
+    if (text === "" || !Number.isInteger(n) || n < 1 || n % 2 === 0) {
+      throw new Error("Smoothing must be an odd whole number of points (1, 3, 5, 7, …; 1 = no smoothing), " +
+                      "so the running mean stays centred.");
+    }
+    return n;
   }
 
   currentDataKey() {
-    return `${state.loadToken}|${state.version}|${this.usesQ ? state.qUnit : ""}|${this.smoothing()}`;
+    let smooth;
+    try { smooth = this.smoothing(); } catch (_) { smooth = "invalid"; }
+    return `${state.loadToken}|${state.version}|${this.usesQ ? state.qUnit : ""}|${smooth}`;
   }
 
   fetch() {
@@ -1044,30 +1133,83 @@ class ProfileCard extends Card {
   }
 
   exportArgs() {
-    return { log: $(".opt-log", this.el).checked, smooth: this.smoothing() };
+    return { log: $(".opt-log", this.el).checked, smooth: this.smoothing(), xlim: this.limits().x };
+  }
+
+  /** The x range shown with no limits: the data's own. */
+  fullRange() {
+    if (!this.data) return null;
+    const x = this.data.arrays.x;
+    return [x[0], x[x.length - 1]];
   }
 
   draw() {
+    let lim;
+    try {
+      lim = this.limits();
+    } catch (err) {
+      this.note.textContent = err.message;
+      return;
+    }
     const { meta, arrays } = this.data;
     const log = $(".opt-log", this.el).checked;
     const ax = axisDef(this.def.axis);
+    const colours = state.init.colours.profile;
+    this.setLabel(".lim-x", ax.page);
+
+    // Only the points inside the x limits are drawn, so the y-axis fits them
+    // (the export does the same).  Smoothing ran on the whole profile first.
+    const lo = lim.x[0] == null ? -Infinity : lim.x[0];
+    const hi = lim.x[1] == null ? Infinity : lim.x[1];
+    const keep = [];
+    for (let i = 0; i < arrays.x.length; i++) {
+      if (arrays.x[i] >= lo && arrays.x[i] <= hi) keep.push(i);
+    }
+    if (keep.length < 2) {
+      this.note.textContent = "Fewer than 2 points lie inside the x-axis limits.";
+      return;
+    }
+    const pick = (a) => Float64Array.from(keep, (i) => a[i]);
+    const x = pick(arrays.x), measured = pick(arrays.raw), smoothed = pick(arrays.y);
+    const smooth = meta.smooth > 1;
+    const where = `${ax.label} = %{x:${ax.fmt}}${ax.hunit}`;
     const spikes = { showspikes: true, spikemode: "across", spikesnap: "data", spikethickness: 1,
                      spikedash: "dot", spikecolor: "#6b7585" };
-    const trace = {
-      type: "scatter", mode: "lines", x: arrays.x, y: arrays.y, connectgaps: false,
-      line: { color: ACCENT, width: 1.5 }, name: "",
-      hovertemplate: `${ax.label} = %{x:${ax.fmt}}${ax.unit}, I = %{y:.4~r} cts<extra></extra>`,
-    };
+
+    // The measured curve faded underneath, the smoothed one on top.
+    const traces = smooth ? [
+      { type: "scatter", mode: "lines", name: "measured", x, y: measured, connectgaps: false,
+        line: { color: colours.measured, width: 1 }, hoverinfo: "skip" },
+      { type: "scatter", mode: "lines", name: `smoothed (${meta.smooth}-point running mean)`,
+        x, y: smoothed, customdata: measured, connectgaps: false,
+        line: { color: colours.smoothed, width: 2 },
+        hovertemplate: `${where}, I = %{y:.4~r} cts (measured %{customdata:.4~r})<extra></extra>` },
+    ] : [
+      { type: "scatter", mode: "lines", name: "measured", x, y: measured, connectgaps: false,
+        line: { color: colours.smoothed, width: 1.5 },
+        hovertemplate: `${where}, I = %{y:.4~r} cts<extra></extra>` },
+    ];
+    const limited = lim.x[0] != null || lim.x[1] != null;
+    const xRange = limited
+      ? { range: [lim.x[0] == null ? x[0] : lim.x[0], lim.x[1] == null ? x[x.length - 1] : lim.x[1]], autorange: false }
+      : { autorange: true };
     const layout = {
       font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#fff",
-      margin: { l: 10, r: 16, t: 16, b: 10 },
-      xaxis: axisStyle(ax.title, spikes),
-      yaxis: axisStyle("Mean counts per pixel", Object.assign({ type: log ? "log" : "linear" }, spikes)),
-      hovermode: "closest", hoverdistance: -1, spikedistance: -1, showlegend: false,
+      margin: { l: 10, r: 16, t: smooth ? 30 : 16, b: 10 },
+      xaxis: axisStyle(ax.title, Object.assign(xRange, spikes)),
+      yaxis: axisStyle("Mean counts per pixel", Object.assign({ type: log ? "log" : "linear", autorange: true }, spikes)),
+      hovermode: "closest", hoverdistance: -1, spikedistance: -1,
+      showlegend: smooth,
+      legend: { orientation: "h", x: 0, xanchor: "left", y: 1.0, yanchor: "bottom", font: { size: 13 } },
       hoverlabel: { font: { family: FONT.family, size: 12 } },
-      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${log}`,
+      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${log}|${meta.smooth}|${JSON.stringify(lim)}`,
     };
-    Plotly.react(this.plot, [trace], layout, PLOT_CONFIG);
+    Plotly.react(this.plot, traces, layout, PLOT_CONFIG).then(() => {
+      if (!this.zoomListener) {
+        this.zoomListener = (event) => this.syncLimits(event);
+        this.plot.on("plotly_relayout", this.zoomListener);
+      }
+    });
     $(".card-meta", this.el).textContent = `${int(meta.n)} ${this.def.along}, ${maskLabel()}`;
     const smoothing = meta.smooth > 1 ? `smoothed: centred running mean of ${meta.smooth} points` : "not smoothed";
     this.note.textContent = `${smoothing} · ` + (meta.n_gaps
@@ -1085,7 +1227,6 @@ function toggleCard(key, make, on) {
     cards.get(key).destroy();
     cards.delete(key);
   }
-  renderHub();
 }
 
 $("#show-raw").addEventListener("change", (e) => toggleCard("raw", () => new MapCard("raw"), e.target.checked));
@@ -1098,11 +1239,10 @@ async function refreshCards() {
   for (const card of Array.from(cards.values())) {
     if (card.kind !== "raw") await card.refresh();
   }
-  renderHub();
 }
 
 // ---------------------------------------------------------------------------
-// 14. figure export (matplotlib in Python)
+// figure export (matplotlib in Python), from the buttons under each plot
 // ---------------------------------------------------------------------------
 
 function exportSettings() {
@@ -1114,13 +1254,11 @@ async function exportCard(card, fmt, button) {
   try {
     extra = card.exportArgs();
   } catch (err) {
-    showMsg(14, `${card.label.replace(/<[^>]+>/g, "")}: ${err.message}`);
+    card.note.textContent = err.message;
     return;
   }
   const name = card.fileName(fmt);
-  const buttons = $$(`[data-card="${card.key}"][data-fmt="${fmt}"]`).concat([button]);
-  buttons.forEach((b) => { b.disabled = true; });
-  clearMsg(14);
+  button.disabled = true;
   try {
     const r = await py("export_figure", Object.assign({
       kind: card.kind, fmt, profile: card.isProfile, q_unit: state.qUnit,
@@ -1128,31 +1266,13 @@ async function exportCard(card, fmt, button) {
     saveBlob(new Blob([r.arrays.file], { type: r.meta.mime }), name);
     idle(`Saved ${name} (${mb(r.meta.bytes)}, drawn in ${r.meta.seconds.toFixed(1)} s).`);
   } catch (err) {
-    showError(14, err);
+    const message = capitalise(err.message || err);
+    card.note.textContent = `Could not save ${name}: ${message}`;
+    setStatus(`Error: ${message.split("\n")[0]}`, "error");
   } finally {
-    buttons.forEach((b) => { b.disabled = false; });
+    button.disabled = false;
   }
 }
-
-function renderHub() {
-  const hub = $("#download-hub");
-  const list = Array.from(cards.values());
-  if (!list.length) {
-    hub.innerHTML = '<li class="muted">Tick a plot in steps 4, 12 or 13 to list it here.</li>';
-    return;
-  }
-  hub.innerHTML = list.map((card) =>
-    `<li><span><span class="hub-name">${card.label}</span> <code>${esc(card.fileName("pdf").replace(/\.pdf$/, ".png / .pdf"))}</code></span>` +
-    `<span class="dl"><button type="button" data-card="${card.key}" data-fmt="png">PNG</button>` +
-    `<button type="button" data-card="${card.key}" data-fmt="pdf">PDF</button></span></li>`).join("");
-}
-
-$("#download-hub").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-card]");
-  if (!button) return;
-  const card = cards.get(button.dataset.card);
-  if (card) exportCard(card, button.dataset.fmt, button);
-});
 
 function syncExportControls() {
   $("#export-columns-tool").hidden = $("#export-preset").value === "presentation";
@@ -1167,6 +1287,8 @@ syncExportControls();
 $$(".segmented button[data-unit]").forEach((button) => button.addEventListener("click", () => {
   const unit = button.dataset.unit;
   if (unit === state.qUnit) return;
+  const factor = UNITS[unit].factor / UNITS[state.qUnit].factor;
+  for (const card of cards.values()) card.rescaleLimits(factor);
   state.qUnit = unit;
   $$(".segmented button[data-unit]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.unit === unit)));
   if (state.pro) renderPro();
@@ -1175,19 +1297,12 @@ $$(".segmented button[data-unit]").forEach((button) => button.addEventListener("
     refreshConvertedHead().catch((err) => showError(9, err));
   }
   for (const card of cards.values()) if (card.usesQ) card.refresh();
-  renderHub();
 }));
 
 // ---------------------------------------------------------------------------
 // start
 // ---------------------------------------------------------------------------
 
-if (window.renderMathInElement) {
-  renderMathInElement(document.body, {
-    delimiters: [{ left: "$$", right: "$$", display: true }, { left: "\\(", right: "\\)", display: false }],
-    throwOnError: false,
-  });
-}
 if (!window.Plotly) {
   setStatus("Plotly could not be loaded from cdn.jsdelivr.net; plots will not work. Check the connection and reload.", "error");
 }

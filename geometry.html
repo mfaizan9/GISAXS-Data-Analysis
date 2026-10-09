@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geometry of GISAXS</title>
+<meta name="description" content="The GISAXS geometry used by the GISAXS Pixel Converter: coordinate frames, schematic, and every equation from detector pixel to exit angles, wavevectors and scattering vector.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d4f91'/%3E%3Cpath d='M16 27V5' stroke='%23fff' stroke-width='2'/%3E%3Ccircle cx='16' cy='12' r='4' fill='%23ffd23f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/source-sans-3@5.3.0/400.css" integrity="sha384-g8Ghv3t8mtnVyQ++/+3xr5ZCA7QFf/qX8qpW+pwIVTqNiMqruf5kT95EMlXwYP95" crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/source-sans-3@5.3.0/400-italic.css" integrity="sha384-BGNoaibwPdGH0Z1L/9yUudQCe192tGCubuKXkX7WTVvM2AYMhA0S6qov+PfiO4rg" crossorigin="anonymous">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/source-sans-3@5.3.0/600.css" integrity="sha384-c7ux4hHV7MdAKXXDAhU2bPkJQg3DetUGraPyvlzZ3pu6s3uU7p4HkkOyITXWRmWh" crossorigin="anonymous">
+<link rel="stylesheet" href="css/style.css">
+<script>window.MathJax = { svg: { fontCache: "global" } };</script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-svg.js" integrity="sha384-my9P1jDckpHD+5LZsLQ0gaiCl/RMO32HaqwBtbo/25QIMVr6xXIUCg1jvdSRcvb4" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div class="doc">
+
+<header class="doc-head">
+  <h1>Geometry of GISAXS</h1>
+  <a href="index.html">Back to the converter</a>
+</header>
+<p class="muted">The frames, conventions and every equation the GISAXS Pixel Converter uses, from a detector pixel to the exit angles, the final wavevector and the scattering vector.</p>
+
+<section>
+  <h2>Schematic</h2>
+  <p class="muted">Angles are exaggerated (\(\alpha_i = 8^\circ\) in the drawing). The same figure as <a href="docs/geometry.pdf">PDF</a> and <a href="docs/geometry.tex">TikZ source</a>.</p>
+
+  <figure class="panel">
+    <figcaption><b>(a) Side view, lab frame.</b> The beam comes down onto the surface at \(\alpha_i\) and leaves it at \(\alpha_f\).</figcaption>
+<div class="sketch-wrap"><div class="sketch" style="--w:16.45;aspect-ratio:16.45/8.6;--fs-s:1.641cqw;--fs-n:1.945cqw">
+<svg viewBox="-4.05 -5.8 16.45 8.6" role="img" aria-label="Side view in the lab frame">
+<rect x="8" y="-5.2" width="0.2" height="6.5" fill="#edffff" stroke="#a6a6a6" stroke-width="0.0197"/>
+<polygon points="-2.3,1.6 -2.54,1.69 -2.462,1.6 -2.54,1.51" fill="#5a5a5a"/>
+<line x1="-3.6" y1="1.6" x2="-2.462" y2="1.6" stroke="#5a5a5a" stroke-width="0.0351"/>
+<polygon points="-3.6,0.3 -3.51,0.54 -3.6,0.462 -3.69,0.54" fill="#5a5a5a"/>
+<line x1="-3.6" y1="1.6" x2="-3.6" y2="0.462" stroke="#5a5a5a" stroke-width="0.0351"/>
+<circle cx="-3.6" cy="1.6" r="0.0889" fill="none" stroke="#5a5a5a" stroke-width="0.0197"/>
+<line x1="-3.655" y1="1.655" x2="-3.545" y2="1.545" stroke="#5a5a5a" stroke-width="0.0197" stroke-linecap="butt"/>
+<line x1="-3.655" y1="1.545" x2="-3.545" y2="1.655" stroke="#5a5a5a" stroke-width="0.0197" stroke-linecap="butt"/>
+<rect x="-2.1" y="0" width="4.2" height="0.17" fill="#dfdfdf" stroke="#a6a6a6" stroke-width="0.0197" transform="rotate(-8)"/>
+<polygon points="2.9708,-0.4175 2.7457,-0.295 2.8104,-0.395 2.7206,-0.4732" fill="#007d3c"/>
+<line x1="0" y1="0" x2="2.8104" y2="-0.395" stroke="#007d3c" stroke-width="0.0506"/>
+<polygon points="-0.4175,-2.9708 -0.295,-2.7457 -0.395,-2.8104 -0.4732,-2.7206" fill="#007d3c"/>
+<line x1="0" y1="0" x2="-0.395" y2="-2.8104" stroke="#007d3c" stroke-width="0.0506"/>
+<polygon points="0,0 -0.24,0.09 -0.162,0 -0.24,-0.09" fill="#003caa"/>
+<line x1="-3.6" y1="0" x2="-0.162" y2="0" stroke="#003caa" stroke-width="0.0506"/>
+<line x1="0" y1="0" x2="8" y2="0" stroke="#4c76c3" stroke-width="0.0197" stroke-linecap="butt" stroke-dasharray="0.1054 0.1054"/>
+<line x1="0" y1="0" x2="8" y2="-1.1243" stroke="#7828a0" stroke-width="0.0351" stroke-linecap="round" stroke-dasharray="0 0.0914"/>
+<line x1="0" y1="0" x2="8" y2="-2.294" stroke="#d26e00" stroke-width="0.0351" stroke-linecap="butt" stroke-dasharray="0.1757 0.0703"/>
+<polygon points="8,-4.3 7.8312,-4.1071 7.8573,-4.2233 7.746,-4.2656" fill="#be0000"/>
+<line x1="0" y1="0" x2="7.8573" y2="-4.2233" stroke="#be0000" stroke-width="0.0506"/>
+<path d="M4,0 A4,4 0 0 0 3.9611,-0.5567" fill="none" stroke="#7828a0" stroke-width="0.0197"/>
+<path d="M5.2,0 A5.2,5.2 0 0 0 4.9986,-1.4333" fill="none" stroke="#d26e00" stroke-width="0.0197"/>
+<line x1="0" y1="0" x2="0" y2="-2.2" stroke="#9c9c9c" stroke-width="0.0197" stroke-linecap="round" stroke-dasharray="0 0.0512"/>
+<path d="M0,-1.9 A1.9,1.9 0 0 0 -0.2644,-1.8815" fill="none" stroke="#007d3c" stroke-width="0.0197"/>
+<circle cx="8" cy="0" r="0.093" fill="#003caa"/>
+<circle cx="8" cy="-1.1243" r="0.093" fill="#7828a0"/>
+<circle cx="8" cy="-2.294" r="0.1051" fill="#d26e00"/>
+<circle cx="8" cy="-4.3" r="0.093" fill="#be0000"/>
+<polygon points="8,1.05 7.8,1.125 7.865,1.05 7.8,0.975" fill="#4d4d4d"/>
+<polygon points="0,1.05 0.2,0.975 0.135,1.05 0.2,1.125" fill="#4d4d4d"/>
+<line x1="0.135" y1="1.05" x2="7.865" y2="1.05" stroke="#4d4d4d" stroke-width="0.0197"/>
+<polygon points="7.65,-4.3 7.725,-4.1 7.65,-4.165 7.575,-4.1" fill="#4d4d4d"/>
+<polygon points="7.65,0 7.575,-0.2 7.65,-0.135 7.725,-0.2" fill="#4d4d4d"/>
+<line x1="7.65" y1="-0.135" x2="7.65" y2="-4.165" stroke="#4d4d4d" stroke-width="0.0197"/>
+</svg>
+<span class="n" style="left:73.86%;top:6.98%;transform:translate(-50%,-100%);color:#4d4d4d">detector \(\perp\) beam</span>
+<span class="n" style="left:10.64%;top:86.05%;transform:translate(-50%,0);color:#5a5a5a">\(X\)</span>
+<span class="n" style="left:2.74%;top:70.93%;transform:translate(-100%,-50%);color:#5a5a5a">\(Z\)</span>
+<span class="s" style="left:2.43%;top:86.63%;transform:translate(-100%,0);color:#5a5a5a">\(Y\)</span>
+<span class="s" style="left:1.52%;top:95.93%;transform:translate(0,-50%);color:#5a5a5a">lab frame \((X, Y, Z)\), \(Y\) into the page</span>
+<span class="s" style="left:17.33%;top:76.16%;transform:translate(-50%,-50%);color:#4d4d4d">sample</span>
+<span class="n" style="left:42.68%;top:62.59%;transform:translate(-100%,-100%);color:#007d3c;background:#fff;background-clip:content-box">\(\hat{\mathbf u}\)</span>
+<span class="n" style="left:22.08%;top:32.90%;transform:translate(-50%,-100%);color:#007d3c">\(\hat{\mathbf n}\)</span>
+<span class="s" style="left:1.52%;top:10.47%;transform:translate(0,-50%);color:#007d3c">sample frame \((\hat{\mathbf u}, \hat{\mathbf v}, \hat{\mathbf n})\)</span>
+<span class="s" style="left:1.52%;top:16.28%;transform:translate(0,-50%);color:#007d3c">\(\hat{\mathbf v} = \hat{\mathbf Y}\) (into the page)</span>
+<span class="n" style="left:12.58%;top:67.44%;transform:translate(-50%,-100%);color:#003caa">\(\mathbf k_i\)</span>
+<span class="n" style="left:51.37%;top:39.94%;transform:translate(-100%,-100%);color:#be0000">\(\mathbf r\)</span>
+<span class="n" style="left:51.30%;top:63.87%;transform:translate(-50%,-50%);color:#7828a0">\(\alpha_i\)</span>
+<span class="n" style="left:59.05%;top:58.19%;transform:translate(-50%,-50%);color:#d26e00;background:#fff;background-clip:content-box">\(2\alpha_i\)</span>
+<span class="s" style="left:23.65%;top:40.99%;transform:translate(-50%,-50%);color:#007d3c">\(\alpha_i\)</span>
+<span class="s" style="left:75.38%;top:67.44%;transform:translate(0,-50%);color:#003caa">direct beam, \(y = 0\)</span>
+<span class="s" style="left:75.38%;top:54.37%;transform:translate(0,-50%);color:#7828a0">horizon, \(y = L\tan\alpha_i\)</span>
+<span class="s" style="left:75.38%;top:40.77%;transform:translate(0,-50%);color:#d26e00">specular, \(y = L\tan 2\alpha_i\)</span>
+<span class="s" style="left:75.38%;top:17.44%;transform:translate(0,-50%);color:#be0000">pixel \((x, y)\)</span>
+<span class="s" style="left:48.94%;top:79.65%;transform:translate(-50%,0);color:#4d4d4d">\(L\)</span>
+<span class="s" style="left:71.12%;top:32.44%;transform:translate(-100%,-50%);color:#4d4d4d;background:#fff;padding:0 .15em">\(y\)</span>
+</div></div>
+  </figure>
+
+  <figure class="panel">
+    <figcaption><b>(b) Detector face</b>, seen from behind the detector, looking back at the sample. The detector plane is the \(Y\)&ndash;\(Z\) plane: \(x\) along \(Y = \hat{\mathbf v}\), \(y\) along \(Z\) (up).</figcaption>
+<div class="sketch-wrap"><div class="sketch" style="--w:9.72;aspect-ratio:9.72/9.18;--fs-s:2.778cqw;--fs-n:3.292cqw">
+<svg viewBox="-4.6575 -7.2225 9.72 9.18" role="img" aria-label="Detector face">
+<rect x="-4.455" y="-7.02" width="8.91" height="8.775" fill="#f2ffff"/>
+<rect x="-4.455" y="-1.5178" width="8.91" height="3.2728" fill="#e8e8e8"/>
+<rect x="-0.243" y="-7.02" width="0.486" height="5.5022" fill="#f8e9d9"/>
+<rect x="-4.455" y="-7.02" width="8.91" height="8.775" fill="none" stroke="#a6a6a6" stroke-width="0.0197"/>
+<line x1="-4.455" y1="-1.5178" x2="4.455" y2="-1.5178" stroke="#7828a0" stroke-width="0.0351" stroke-linecap="round" stroke-dasharray="0 0.0914"/>
+<polygon points="3.915,1.485 3.675,1.575 3.753,1.485 3.675,1.395" fill="#5a5a5a"/>
+<line x1="2.7" y1="1.485" x2="3.753" y2="1.485" stroke="#5a5a5a" stroke-width="0.0351"/>
+<polygon points="2.7,0.27 2.79,0.51 2.7,0.432 2.61,0.51" fill="#5a5a5a"/>
+<line x1="2.7" y1="1.485" x2="2.7" y2="0.432" stroke="#5a5a5a" stroke-width="0.0351"/>
+<line x1="2.16" y1="-5.805" x2="2.16" y2="0" stroke="#d86666" stroke-width="0.0197" stroke-linecap="butt" stroke-dasharray="0.1054 0.0703"/>
+<line x1="2.16" y1="-5.805" x2="0" y2="-5.805" stroke="#d86666" stroke-width="0.0197" stroke-linecap="butt" stroke-dasharray="0.1054 0.0703"/>
+<circle cx="0" cy="0" r="0.101" fill="#003caa"/>
+<circle cx="0" cy="-3.0969" r="0.1213" fill="#d26e00"/>
+<circle cx="2.16" cy="-5.805" r="0.101" fill="#be0000"/>
+</svg>
+<span class="s" style="left:18.75%;top:72.06%;transform:translate(-50%,-50%);color:#404040;text-align:center;line-height:1.2">below horizon<br>(dropped)</span>
+<span class="s" style="left:45.14%;top:34.56%;transform:translate(-50%,-100%) rotate(-90deg);transform-origin:50% 100%;color:#d26e00">specular rod</span>
+<span class="s" style="left:93.75%;top:62.14%;transform:translate(-100%,-100%);color:#7828a0">horizon \(\alpha_f = 0\)</span>
+<span class="s" style="left:88.19%;top:94.85%;transform:translate(-50%,-100%);color:#5a5a5a">\(Y\)</span>
+<span class="s" style="left:75.69%;top:81.62%;transform:translate(0,-50%);color:#5a5a5a">\(Z\)</span>
+<span class="s" style="left:47.92%;top:79.44%;transform:translate(-50%,0);color:#003caa">direct beam \((0, 0)\)</span>
+<span class="s" style="left:50.25%;top:44.94%;transform:translate(0,-50%);color:#d26e00;background:#f2ffff">specular \((0,\ L\tan 2\alpha_i)\)</span>
+<span class="s" style="left:70.14%;top:15.44%;transform:translate(-50%,-100%);color:#be0000">pixel \((x, y)\)</span>
+<span class="s" style="left:70.14%;top:78.68%;transform:translate(-50%,0);color:#980000">\(x\)</span>
+<span class="s" style="left:45.14%;top:15.44%;transform:translate(-100%,-50%);color:#980000">\(y\)</span>
+</div></div>
+  </figure>
+
+  <figure class="panel">
+    <figcaption><b>(c) Top view</b>, looking down along \(-Z\), with the in-plane exit angle \(\varphi_f\).</figcaption>
+<div class="sketch-wrap"><div class="sketch" style="--w:13.8;aspect-ratio:13.8/5.85;--fs-s:1.957cqw;--fs-n:2.319cqw">
+<svg viewBox="-4.05 -3.1 13.8 5.85" role="img" aria-label="Top view">
+<rect x="-1.4" y="-1.4" width="2.8" height="2.8" fill="#dfdfdf" stroke="#a6a6a6" stroke-width="0.0197"/>
+<rect x="8" y="-2.6" width="0.2" height="5" fill="#edffff" stroke="#a6a6a6" stroke-width="0.0197"/>
+<polygon points="0,0 -0.24,0.09 -0.162,0 -0.24,-0.09" fill="#003caa"/>
+<line x1="-3.6" y1="0" x2="-0.162" y2="0" stroke="#003caa" stroke-width="0.0506"/>
+<line x1="0" y1="0" x2="8" y2="0" stroke="#4c76c3" stroke-width="0.0197" stroke-linecap="butt" stroke-dasharray="0.1054 0.1054"/>
+<circle cx="8" cy="0" r="0.093" fill="#003caa"/>
+<polygon points="-2.3,2.2 -2.54,2.29 -2.462,2.2 -2.54,2.11" fill="#5a5a5a"/>
+<line x1="-3.6" y1="2.2" x2="-2.462" y2="2.2" stroke="#5a5a5a" stroke-width="0.0351"/>
+<polygon points="-3.6,0.9 -3.51,1.14 -3.6,1.062 -3.69,1.14" fill="#5a5a5a"/>
+<line x1="-3.6" y1="2.2" x2="-3.6" y2="1.062" stroke="#5a5a5a" stroke-width="0.0351"/>
+<polygon points="2.6,0 2.36,0.09 2.438,0 2.36,-0.09" fill="#007d3c"/>
+<line x1="0" y1="0" x2="2.438" y2="0" stroke="#007d3c" stroke-width="0.0506"/>
+<polygon points="0,-2.2 0.09,-1.96 0,-2.038 -0.09,-1.96" fill="#007d3c"/>
+<line x1="0" y1="0" x2="0" y2="-2.038" stroke="#007d3c" stroke-width="0.0506"/>
+<path d="M2.4,0 A2.4,2.4 0 0 0 2.3534,-0.4707" fill="none" stroke="#be0000" stroke-width="0.0351"/>
+<polygon points="8,-1.6 7.7823,-1.4647 7.8411,-1.5682 7.747,-1.6412" fill="#be0000"/>
+<line x1="0" y1="0" x2="7.8411" y2="-1.5682" stroke="#be0000" stroke-width="0.0506"/>
+<circle cx="8" cy="-1.6" r="0.093" fill="#be0000"/>
+<polygon points="8.45,-1.6 8.525,-1.4 8.45,-1.465 8.375,-1.4" fill="#4d4d4d"/>
+<polygon points="8.45,0 8.375,-0.2 8.45,-0.135 8.525,-0.2" fill="#4d4d4d"/>
+<line x1="8.45" y1="-0.135" x2="8.45" y2="-1.465" stroke="#4d4d4d" stroke-width="0.0197"/>
+</svg>
+<span class="s" style="left:23.55%;top:82.05%;transform:translate(-50%,-50%);color:#4d4d4d">sample</span>
+<span class="s" style="left:88.04%;top:8.55%;transform:translate(-50%,-100%);color:#4d4d4d">detector</span>
+<span class="n" style="left:15.00%;top:52.99%;transform:translate(-50%,-100%);color:#003caa">\(\mathbf k_i\)</span>
+<span class="n" style="left:12.68%;top:90.60%;transform:translate(-50%,0);color:#5a5a5a">\(X\)</span>
+<span class="n" style="left:3.26%;top:68.38%;transform:translate(-100%,-50%);color:#5a5a5a">\(Y\)</span>
+<span class="n" style="left:48.19%;top:52.99%;transform:translate(0,0);color:#007d3c">\(\hat{\mathbf u}\)</span>
+<span class="n" style="left:29.35%;top:15.38%;transform:translate(-100%,-50%);color:#007d3c">\(\hat{\mathbf v}\)</span>
+<span class="n" style="left:49.25%;top:48.34%;transform:translate(-50%,-50%);color:#be0000">\(\varphi_f\)</span>
+<span class="n" style="left:64.13%;top:36.58%;transform:translate(-100%,-100%);color:#be0000">\(\mathbf r\) (projected)</span>
+<span class="s" style="left:90.58%;top:39.32%;transform:translate(0,-50%);color:#4d4d4d">\(x = b\)</span>
+</div></div>
+
+  </figure>
+
+  <figure class="panel">
+    <figcaption><b>(d) Vectors.</b></figcaption>
+    <div class="vectors">
+      <h4>Sample axes in lab components</h4>
+      <p>\(\hat{\mathbf u}=(\cos\alpha_i,\ 0,\ \sin\alpha_i),\quad \hat{\mathbf v}=(0,\ 1,\ 0),\quad \hat{\mathbf n}=(-\sin\alpha_i,\ 0,\ \cos\alpha_i)\)</p>
+      <h4>Pixel vector</h4>
+      <p>lab: \(\ \mathbf r=L\,\hat{\mathbf X}+x\,\hat{\mathbf Y}+y\,\hat{\mathbf Z}\)<br>
+         sample: \(\ \mathbf r=a\,\hat{\mathbf u}+b\,\hat{\mathbf v}+c\,\hat{\mathbf n}\)<br>
+         \(a=L\cos\alpha_i+y\sin\alpha_i,\quad b=x,\quad c=y\cos\alpha_i-L\sin\alpha_i\)<br>
+         \(R=|\mathbf r|=\sqrt{L^2+x^2+y^2}\)</p>
+      <h4>Exit angles</h4>
+      <p>\(\varphi_f=\operatorname{atan2}(b,\ a),\qquad \alpha_f=\operatorname{atan2}\!\big(c,\ \sqrt{a^2+b^2}\big)\)</p>
+      <h4>Wavevectors (\(k=2\pi/\lambda\), sample frame)</h4>
+      <p>\(\mathbf k_i=k\,(\cos\alpha_i,\ 0,\ -\sin\alpha_i)\)<br>
+         \(\displaystyle \mathbf k_f=\frac{k}{R}\,(a,\ b,\ c)=k\,(\cos\alpha_f\cos\varphi_f,\ \cos\alpha_f\sin\varphi_f,\ \sin\alpha_f)\)</p>
+      <h4>Scattering vector \(\mathbf q=\mathbf k_f-\mathbf k_i\) (components along \(\hat{\mathbf u}, \hat{\mathbf v}, \hat{\mathbf n}\))</h4>
+      <p>\(\displaystyle q_x=k\Big(\frac{a}{R}-\cos\alpha_i\Big),\qquad q_y=k\,\frac{b}{R},\qquad q_z=k\Big(\frac{c}{R}+\sin\alpha_i\Big)\)</p>
+    </div>
+  </figure>
+</section>
+
+<section>
+  <h2>Three coordinate systems</h2>
+  <div class="table-wrap"><table class="plain">
+    <thead><tr><th>system</th><th>axes</th><th>meaning</th></tr></thead>
+    <tbody>
+      <tr><td><b>lab frame</b></td><td>\(X, Y, Z\)</td><td>\(X\) along the incident beam, \(Z\) vertical up, \(Y = Z \times X\) (horizontal)</td></tr>
+      <tr><td><b>sample frame</b></td><td>\(\hat{\mathbf u}, \hat{\mathbf v}, \hat{\mathbf n}\)</td><td>\(\hat{\mathbf u}\) in the surface along the beam, \(\hat{\mathbf v} = \hat{\mathbf Y}\) in the surface, \(\hat{\mathbf n}\) the surface normal</td></tr>
+      <tr><td><b>detector</b></td><td>\(x, y\)</td><td>position on the detector in mm, measured from the direct beam; the detector plane is the \(Y\)&ndash;\(Z\) plane: \(x\) along \(Y\), \(y\) along \(Z\) (up)</td></tr>
+    </tbody>
+  </table></div>
+  <p>The sample is tilted by \(\alpha_i\) about \(Y\). In lab components</p>
+  $$\hat{\mathbf u}=(\cos\alpha_i,\ 0,\ \sin\alpha_i),\qquad \hat{\mathbf v}=(0,\ 1,\ 0),\qquad \hat{\mathbf n}=(-\sin\alpha_i,\ 0,\ \cos\alpha_i)$$
+  <p><b>All results \((\varphi_f,\ \alpha_f,\ \mathbf k_f,\ \mathbf q)\) are in the sample frame</b>: the components written \(x, y, z\) \((k_{fx},\ q_x,\ \dots)\) are the components along \(\hat{\mathbf u}, \hat{\mathbf v}, \hat{\mathbf n}\).</p>
+</section>
+
+<section>
+  <h2>From a pixel to \(\mathbf q\)</h2>
+  <h3>Pixel position</h3>
+  <p>The vector from the sample to the pixel, in the lab frame and in the sample frame:</p>
+  $$\mathbf r = L\,\hat{\mathbf X} + x\,\hat{\mathbf Y} + y\,\hat{\mathbf Z} = a\,\hat{\mathbf u} + b\,\hat{\mathbf v} + c\,\hat{\mathbf n}$$
+  $$a = L\cos\alpha_i + y\sin\alpha_i,\qquad b = x,\qquad c = y\cos\alpha_i - L\sin\alpha_i$$
+  $$R = \sqrt{L^2 + x^2 + y^2} = \sqrt{a^2+b^2+c^2}$$
+
+  <h3>Exit angles</h3>
+  $$\varphi_f = \operatorname{atan2}(b,\ a),\qquad \alpha_f = \operatorname{atan2}\!\left(c,\ \sqrt{a^2+b^2}\right)$$
+  <p>\(\varphi_f\) increases with \(x\).</p>
+
+  <h3>Wavevectors</h3>
+  $$k = \frac{2\pi}{\lambda},\qquad \mathbf k_f = \frac{k}{R}\,(a,\ b,\ c),\qquad \mathbf k_i = k\,(\cos\alpha_i,\ 0,\ -\sin\alpha_i)$$
+  $$k_{fx} = k\,\frac{a}{R} = k\cos\alpha_f\cos\varphi_f,\qquad k_{fy} = k\,\frac{b}{R} = k\cos\alpha_f\sin\varphi_f,\qquad k_{fz} = k\,\frac{c}{R} = k\sin\alpha_f$$
+
+  <h3>Scattering vector \(\mathbf q = \mathbf k_f - \mathbf k_i\)</h3>
+  $$q_x = k\left(\frac{a}{R} - \cos\alpha_i\right),\qquad q_y = k\,\frac{b}{R},\qquad q_z = k\left(\frac{c}{R} + \sin\alpha_i\right)$$
+  <p>Equivalently</p>
+  $$q_x = k(\cos\alpha_f\cos\varphi_f - \cos\alpha_i),\qquad q_y = k\cos\alpha_f\sin\varphi_f,\qquad q_z = k(\sin\alpha_f + \sin\alpha_i)$$
+  <p>The code uses the \(a/R,\ b/R,\ c/R\) form, vectorised over all pixels.</p>
+</section>
+
+<section>
+  <h2>Special positions</h2>
+  <div class="table-wrap"><table class="plain">
+    <thead><tr><th>feature</th><th>condition</th><th>detector position</th></tr></thead>
+    <tbody>
+      <tr><td>direct beam</td><td>\(\alpha_f = -\alpha_i,\ \varphi_f = 0\)</td><td>\(x = 0,\ y = 0\)</td></tr>
+      <tr><td>sample horizon</td><td>\(\alpha_f = 0\)</td><td>\(y = L\tan\alpha_i\)</td></tr>
+      <tr><td>specular spot</td><td>\(\alpha_f = \alpha_i,\ \varphi_f = 0\)</td><td>\(x = 0,\ y = L\tan 2\alpha_i\)</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Horizon cut</h3>
+  <p>For each detector row, at \(x = 0\),</p>
+  $$\alpha_{f,\text{row}} = \operatorname{atan2}(c,\ a)$$
+  <p>and every row with \(\alpha_{f,\text{row}} &lt; 0\) is dropped as a whole, so the data stays a rectangular image. The beamstop lies below the horizon and goes with it.</p>
+</section>
+
+<section>
+  <h2>Direct-beam offset</h2>
+  <p>The equations above need the direct beam at the detector origin. On some instruments it sits above it, at \((0,\ y_0)\); then the specular spot is not at \(\alpha_f = \alpha_i\). Before converting, the app finds \(y_0\) from the data and moves every pixel down,</p>
+  $$y \;\to\; y - y_0 ,$$
+  <p>keeping \(\alpha_i\) from the <code>.pro</code> file. Two estimates of \(y_0\) are made and checked:</p>
+  <ol class="tight">
+    <li><b>The direct beam</b>, if it shows in the frame: its centroid gives \(y_0\). It is used if, measured from it, the specular spot sits at \(\alpha_f = \alpha_i\) within one pixel.</li>
+    <li><b>The specular spot</b> at height \(y_s\) otherwise:
+      $$y_0 = y_s - L\tan 2\alpha_i ,$$
+      which puts the spot at \(\alpha_f = \alpha_i\) exactly. This is used when the direct beam does not show, or when part of it is hidden behind the beamstop, which pulls its centroid away.</li>
+  </ol>
+  <p>Both spots are located on the raw detector: a window around where they are expected, moved onto the brightest pixel, then the centroid of the points above half maximum.</p>
+</section>
+
+<section>
+  <h2>Conventions and assumptions</h2>
+  <ul class="tight">
+    <li>The detector is perpendicular to the incident beam at distance \(L = |\mathbf N|\); only the length of the <code>.pro</code> normal vector \(\mathbf N\) is used.</li>
+    <li>\(x, y\) are measured from the direct beam (after the offset correction above).</li>
+    <li>\(\varphi_f\) increases with \(x\). BornAgain uses the opposite sign for \(\varphi_f\) and \(q_y\); this app does not.</li>
+    <li>Angles are shown and exported in degrees, and the trigonometry is done in radians. \(k\) and \(q\) are in \(\mathrm{nm}^{-1}\) (\(\lambda\) is in nm), or in \(\text{Å}^{-1}\) with the toggle in the converter.</li>
+  </ul>
+</section>
+
+</div>
+
+</body>
+</html>

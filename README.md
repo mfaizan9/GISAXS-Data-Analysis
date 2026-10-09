@@ -14,31 +14,41 @@ leave your computer, and the site is plain static files on GitHub Pages.
 
 ## What it does
 
-The page is a sequence of numbered steps that unlock in order:
+At the top of the page, **Click to see the geometry of GISAXS** opens
+`geometry.html` in a new tab: the schematic, the coordinate frames and every
+equation below, all written out in HTML. The schematic is drawn as inline SVG
+with MathJax labels, one panel per row, (a) to (d), so it scales with the page. Below it is a sequence of numbered steps
+that unlock in order:
 
 1. **Upload** the `.dat` and `.pro` files (drop both at once or pick them).
-2. **Instrument parameters** from the `.pro` file, plus the derived distance
-   $L = |\mathbf N|$, pixel pitch, $k = 2\pi/\lambda$ and the angular size of one
-   pixel. The collapsible **Geometry & equations** panel shows the schematic and
-   every formula below.
-3. **Raw data**: the first rows (`df.head()`), pixel count, grid, pixel order
-   check, dead and zero pixels.
+2. **Instrument parameters** from the `.pro` file: detector bins, wavelength,
+   incidence angle and the sample–detector distance $L = |\mathbf N|$.
+3. **Raw data**: pixel count, $x$ and $y$ ranges, and the first few rows.
 4. **Raw intensity map** (optional): y vs x over the full detector.
-5. **Exit angles** $(x, y) \to (\varphi_f, \alpha_f)$.
+5. **Exit angles** $(x, y) \to (\varphi_f, \alpha_f)$. The direct-beam offset
+   is found from the data and corrected first (see below).
 6. **Final wavevector** $k_{fx}, k_{fy}, k_{fz}$.
 7. **Scattering vector** $q_x, q_y, q_z$.
 8. **Horizon cut**: whole detector rows below the sample horizon are dropped, so
    the data stays a rectangular image (the beamstop goes with them).
-9. **Converted table** and download as `.csv.gz` (default) or plain `.csv`.
+9. **Final data**: the first rows and the download as `.csv.gz` (default) or
+   plain `.csv`.
 10. **Mask the specular rod?** with `mask.py` (`find_rod`, `mask_rod`), width
     $n_\sigma\sigma$ (default 4) or a fixed half-width in degrees.
-11. **Mask the specular spot?** (only if the rod was not masked) with `spot.py`.
-12. **2D maps**: $q_z$ vs $q_y$, $\alpha_f$ vs $\varphi_f$, $y$ vs $x$. Every
-    pixel is one point coloured by its counts; no averaging, no regridding.
-13. **1D profiles**: mean counts per pixel vs $\varphi_f$, $q_y$, $\alpha_f$, $q_z$,
-    smoothed with a centred running mean of 7 points (or 5, or none).
-14. **Download** any plot as PNG or PDF, drawn by matplotlib in a publication
-    or presentation style.
+11. **Mask the specular spot?** (only if the rod was not masked) with `spot.py`;
+    the search window always follows the peak.
+12. **2D intensity maps**: $q_z$ vs $q_y$, $\alpha_f$ vs $\varphi_f$, $y$ vs
+    $x$. Every pixel is one point coloured by its counts; no averaging, no
+    regridding.
+13. **1D intensity profiles**: mean counts per pixel vs $\varphi_f$, $q_y$,
+    $\alpha_f$, $q_z$, smoothed with a centred running mean of 7 points by
+    default (any odd number can be typed; 1 = none).
+
+Every plot has **PNG** and **PDF** buttons underneath: the figure is redrawn
+by matplotlib in the publication or presentation style chosen at the top.
+
+Symbols and numbers on the page are typeset with MathJax, including the plot
+axis titles.
 
 Steps 5 to 8 run with one click (the conversion of about one million pixels takes
 under a second). Display options (log scale, colormap, colour range, point size)
@@ -55,7 +65,8 @@ re-fetch only the arrays they change.
 4. Tick the maps and profiles you want. Zoom with the mouse; the hover label
    shows the coordinates and the real counts.
 5. Pick the export style at the top (**Publication**, 1 or 2 journal columns, or
-   **Presentation / projector**) and the q unit (nm⁻¹ or Å⁻¹), then download.
+   **Presentation / projector**) and the q unit (nm⁻¹ or Å⁻¹), then use the
+   **PNG** / **PDF** buttons under a plot.
 
 Everything after the first load works offline; only the CDN downloads need the
 network.
@@ -153,6 +164,51 @@ file keeps 925 × 1028 = 950,900 pixels.
 - Counts of −1 (dead pixels) become NaN on reading, and so does their variance.
   NaN already in the file is kept as NaN.
 
+## The direct-beam offset (found automatically)
+
+The formulas assume the direct beam at the detector origin; then the specular
+spot sits at $\alpha_f = \alpha_i$, i.e. at $y = L\tan 2\alpha_i$. On some
+instruments the direct beam is not at the origin but above it, at
+$(0,\ y_0)$ (in the instrument software it shows at $x = 0$ and a positive
+$y$). Every $\alpha_f$ is then off, and features such as Yoneda peaks land at
+different $\alpha_f$ in frames measured at different $\alpha_i$.
+
+When converting (step 5), the app finds $y_0$ from the data and moves every
+pixel down, $y \to y - y_0$, keeping the `.pro` $\alpha_i$. Nothing has to be
+chosen or entered.
+$y_0$ is estimated two ways, and both are checked on the backend
+(`spot.find_offset`):
+
+1. **The direct beam itself**, if it shows in the frame: its centroid gives
+   $y_0$. It is accepted if, measured from it, the specular spot sits at
+   $\alpha_f = \alpha_i$ within one pixel.
+2. **The specular spot**: $y_0 = y_s - L\tan 2\alpha_i$, which puts the spot at
+   $\alpha_f = \alpha_i$ by construction.
+
+The direct beam is used when it passes the check, being the measured origin.
+Otherwise the spot is used: the direct beam was not found, or part of it is
+behind the beamstop, which pulls its centroid away. Both spots are located
+on the raw detector the same way as the spot mask (window, climbing to the
+local maximum, centroid above half maximum). The direct beam is searched for
+where the spot says it should be.
+
+If the specular spot cannot be found, the frame is converted as it is and
+step 5 says so. After the shift, $y$ in the maps and the exported table is
+measured from the direct beam. The raw map of step 4 keeps the file's $y$, and
+the table's header records $y_0$ and how it was found. $\alpha_i$ is never
+changed, so $q_z$ moves down with the pixels.
+
+For the test file the specular spot is at $(x_s, y_s) = (0.180, 20.274)$ mm
+instead of $y = 16.755$ mm ($\alpha_f = 0.4260°$ with $\alpha_i = 0.3000°$):
+
+| check | y₀ | spot then at α_f | used |
+|---|---|---|---|
+| 1. direct beam, seen at (−0.05, 3.758) mm | 3.758 mm | 0.2914° (3.2 pixels off) | no: its lower edge is behind the beamstop |
+| 2. specular spot | 3.519 mm | 0.2999° | yes |
+
+With the shift the horizon cut keeps 878 rows, and the spot mask (step 11)
+finds the spot with its default window.
+
 ## Masks
 
 **Specular rod** (`py/mask.py`, provided): the column sums are profiled against
@@ -192,12 +248,21 @@ is masked (n default 4). A FWHM narrower than one pixel is replaced by one pixel
   background (black can be selected per map); NaN pixels (dead or masked) in
   plotstyle's grey "bad" colour. Defaults: vmin = 1 count, vmax = the maximum
   of the unmasked data; both can be set by hand.
+- **Axis limits.** Every plot has "from / to" boxes: x for the profiles, x and
+  y for the maps. Typed limits change the plot on screen and the downloaded
+  figure alike; a profile is cut to the points inside, so its y-axis fits
+  them. Zooming with the mouse fills the boxes in, so a download shows what
+  the screen shows; **Full range** empties them. Limits on q axes are converted
+  when the q unit is switched.
 - **Profile smoothing.** Each 1D profile is smoothed with a centred running
-  mean, `profile.rolling(7, center=True, min_periods=1).mean()` by default
-  (5 points or no smoothing can be chosen per plot; the export uses the same
-  setting). `min_periods=1` keeps the end points. Columns or rows that are fully
+  mean, `profile.rolling(7, center=True, min_periods=1).mean()` by default.
+  The number of points is typed per plot: any odd whole number (1 = no
+  smoothing; odd so the mean stays centred and peaks do not shift by half a
+  point). The export uses the same setting. `min_periods=1` keeps the end
+  points. Columns or rows that are fully
   masked stay NaN after smoothing, so a masked rod is still a gap rather than
-  being filled in from its edges.
+  being filled in from its edges. The measured curve is drawn faded (light
+  grey) with the smoothed curve on top (dark grey), on screen and in the file.
 - **Colormaps**: viridis (default), cividis, inferno, magma, turbo. The Plotly
   colour scales are sampled from the same matplotlib colormaps, so screen and
   file match.
@@ -275,7 +340,8 @@ Python files and starts a Web Worker.
 ## Files
 
 ```
-index.html            the page (loads Pyodide, Plotly and KaTeX from cdn.jsdelivr.net, pinned)
+index.html            the page (loads Pyodide, Plotly, MathJax and the Source Sans 3 font from cdn.jsdelivr.net, pinned)
+geometry.html         the geometry of GISAXS: schematic (inline SVG), frames and equations (opens in a new tab)
 css/style.css
 js/app.js             UI, file upload, Plotly rendering, downloads
 js/worker.js          Pyodide in a module Web Worker
@@ -287,11 +353,11 @@ py/spot.py            specular-spot mask
 py/figures.py         matplotlib PNG/PDF export using plotstyle
 py/bridge.py          session state and the commands the worker calls
 tests/test_gisaxs.py  pytest, plain CPython
-assets/geometry.svg   schematic (also geometry.png)
+assets/geometry.svg   the original schematic as one image (also geometry.png); geometry.html redraws it
 docs/geometry.pdf, docs/geometry.tex
 test_data/            the example measurement used by the integration tests
 ```
 
 Pinned versions: Pyodide 314.0.7 (Python 3.14, numpy 2.4.6, pandas 3.0.2,
-matplotlib 3.10.8), Plotly.js 4.1.1, KaTeX 0.18.9. The worker is a module
+matplotlib 3.10.8), Plotly.js 4.1.1, MathJax 4.1.3. The worker is a module
 worker, so current Chrome, Edge, Firefox (114+) and Safari (15+) are supported.

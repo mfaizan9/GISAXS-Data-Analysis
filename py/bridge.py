@@ -50,7 +50,9 @@ class Session:
         self.pro = None          # read_pro() dict
         self.pro_name = None
         self.summary = None      # gisaxs.instrument_summary()
-        self.geom = None
+        self.geom = None         # from the .pro file
+        self.geom_used = None    # what the conversion used (alpha_i may be fixed)
+        self.offset = None       # how alpha_i was fixed from the specular spot
         self.dat_name = None
         self.raw = None          # x, y, intensity[, variance]; full detector
         self.cut = None          # converted, rows below the horizon dropped
@@ -151,7 +153,6 @@ def cmd_init():
         "colormaps": figures.COLORMAPS,
         "default_n_sigma": mask.DEFAULT_N_SIGMA,
         "default_window": spot.DEFAULT_WINDOW,
-        "smoothing_windows": list(gisaxs.SMOOTHING_WINDOWS),
         "default_smoothing": gisaxs.DEFAULT_SMOOTHING,
         "zero_colours": list(figures.ZERO_COLOURS),
         "versions": {
@@ -191,6 +192,7 @@ def cmd_load_dat(path, name):
     _require("pro")
     S.dat_name = name
     S.raw = S.cut = S.data = None
+    S.geom_used = S.offset = None
     S.mask_kind, S.mask_text = "none", ""
     t0 = time.time()
     try:
@@ -224,11 +226,33 @@ def cmd_load_dat(path, name):
     })
 
 
-def cmd_convert():
+def _find_offset():
+    """The direct-beam offset of the loaded frame (spot.find_offset)."""
+    progress("Finding the specular spot and the direct beam…")
+    try:
+        return spot.find_offset(S.raw, S.geom)
+    except spot.SpotError as err:
+        raise InputError(f"could not find the specular spot, so the direct-beam "
+                         f"offset cannot be corrected: {err}") from None
+
+
+def cmd_convert(correct_offset=True):
+    """Steps 5-8.  With correct_offset, every pixel is first moved down by the
+    direct-beam offset y0 found automatically (spot.find_offset), so the direct
+    beam is at the origin and the specular spot at alpha_f = alpha_i.  If the
+    specular spot cannot be found, the frame is converted as it is and
+    offset_error says why."""
     _require("raw")
-    geom = S.geom
-    n = len(S.raw)
-    df = S.raw.copy()
+    geom, offset, shift, offset_error = S.geom, None, 0.0, None
+    if correct_offset:
+        try:
+            offset = _find_offset()
+            shift = offset["y0"]
+        except InputError as err:
+            offset_error = str(err)
+    base = gisaxs.shift_detector(S.raw, shift) if shift else S.raw
+    n = len(base)
+    df = base.copy()
     steps = {}
 
     progress(f"Step 5: exit angles for {n:,} pixels…")
@@ -251,10 +275,10 @@ def cmd_convert():
     alpha_row = gisaxs.row_alpha_f(df, geom)
     cut = gisaxs.horizon_cut(df, geom)
     del df
-    y_row = mask.as_image(S.raw, "y").mean(axis=1)
+    y_row = mask.as_image(base, "y").mean(axis=1)
     kept = alpha_row >= 0
     steps["8"] = {
-        "rows_before": int(S.raw.attrs["ny"]),
+        "rows_before": int(base.attrs["ny"]),
         "rows_dropped": cut.attrs["rows_dropped"],
         "rows_kept": cut.attrs["ny"],
         "nx": cut.attrs["nx"],
@@ -267,9 +291,12 @@ def cmd_convert():
     }
     S.cut = cut
     S.data = cut
+    S.geom_used, S.offset = geom, offset
     S.mask_kind, S.mask_text = "none", ""
     S.version += 1
-    return _pack({"steps": steps, "version": S.version})
+    return _pack({"steps": steps, "version": S.version,
+                  "alpha_i": geom.alpha_i, "y0": shift, "offset": offset,
+                  "offset_error": offset_error})
 
 
 def cmd_table_head(which="converted", q_unit="nm-1"):
@@ -281,9 +308,20 @@ def cmd_table_head(which="converted", q_unit="nm-1"):
 
 def _export_meta(df, mask_text=""):
     s = S.summary
+    shift = ""
+    o = S.offset
+    if o:
+        how = ("the direct beam seen in the frame" if o["method"] == "direct"
+               else "the specular spot, y0 = y_s - L tan(2 alpha_i)")
+        shift = (f"y_mm = y in the .dat file - {o['y0']:.4f} mm, so the direct "
+                 f"beam is at the origin (y0 from {how}); the specular spot, "
+                 f"measured at x = {o['spot']['x']:.4f} mm, y = {o['spot']['y']:.4f} mm "
+                 f"in the file, is then at alpha_f = {o['alpha_f_spot']:.6f} deg")
     return {
+        "shift_text": shift,
         "dat_name": S.dat_name, "pro_name": S.pro_name,
-        "L": s["L"], "alpha_i": s["alpha_i"], "wavelength": s["wavelength"],
+        "L": s["L"], "alpha_i": S.geom_used.alpha_i,
+        "wavelength": s["wavelength"],
         "k": s["k"], "pitch_x": s["pitch_x"], "pitch_y": s["pitch_y"],
         "nx": df.attrs["nx"], "ny": df.attrs["ny"],
         "rows_dropped": S.cut.attrs["rows_dropped"],
@@ -313,7 +351,7 @@ def cmd_export_table(which="converted", fmt="csv.gz", q_unit="nm-1"):
 
 
 def cmd_apply_mask(kind="none", n_sigma=None, half_width=None, window=None,
-                   follow_peak=False):
+                   follow_peak=True):
     _require("cut")
     cut = S.cut
     report = {"kind": kind}
@@ -352,7 +390,7 @@ def cmd_apply_mask(kind="none", n_sigma=None, half_width=None, window=None,
         window = float(window if window is not None else spot.DEFAULT_WINDOW)
         progress("Measuring the specular spot…")
         try:
-            masked, info = spot.find_and_mask(cut, S.geom.alpha_i,
+            masked, info = spot.find_and_mask(cut, S.geom_used.alpha_i,
                                               n_sigma=n_sigma, window=window,
                                               follow_peak=bool(follow_peak))
         except spot.SpotError as err:
@@ -420,34 +458,54 @@ def cmd_map_data(kind, q_unit="nm-1"):
 
 
 def _profile_series(kind, q_unit, smooth=gisaxs.DEFAULT_SMOOTHING):
-    """(x, mean counts) of one profile, smoothed with a running mean of
-    `smooth` points (1 = as measured)."""
+    """(x, measured, smoothed) mean counts of one profile; smoothed is a
+    running mean of `smooth` points (1 = as measured)."""
     _require("cut")
     func, label = PROFILES[kind]
-    series = gisaxs.smooth_profile(func(S.data, label), smooth)
-    x = series.index.to_numpy(dtype=float)
+    measured = func(S.data, label)
+    try:
+        smoothed = gisaxs.smooth_profile(measured, smooth)
+    except ValueError as err:
+        raise InputError(str(err)) from None
+    x = measured.index.to_numpy(dtype=float)
     if label in gisaxs.Q_COLUMNS:
         x = x * gisaxs.q_unit_info(q_unit)[0]
-    return x, series.to_numpy(dtype=float)
+    return x, measured.to_numpy(dtype=float), smoothed.to_numpy(dtype=float)
 
 
 def cmd_profile_data(kind, q_unit="nm-1", smooth=gisaxs.DEFAULT_SMOOTHING):
-    x, y = _profile_series(kind, q_unit, smooth)
+    x, raw, y = _profile_series(kind, q_unit, smooth)
     return _pack({"kind": kind, "n": len(x), "n_gaps": int(np.isnan(y).sum()),
                   "smooth": int(smooth), "q_unit": q_unit, "version": S.version},
-                 arrays={"x": np.ascontiguousarray(x), "y": np.ascontiguousarray(y)})
+                 arrays={"x": np.ascontiguousarray(x), "y": np.ascontiguousarray(y),
+                         "raw": np.ascontiguousarray(raw)})
 
 
 def cmd_export_figure(kind, fmt="png", log=True, cmap="viridis", vmin=None,
                       vmax=None, zero_colour="white", preset="publication",
                       columns=1, q_unit="nm-1", profile=False,
-                      smooth=gisaxs.DEFAULT_SMOOTHING):
+                      smooth=gisaxs.DEFAULT_SMOOTHING, xlim=None, ylim=None):
+    try:
+        data, t0 = _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour,
+                                preset, columns, q_unit, profile, smooth,
+                                xlim, ylim)
+    except figures.FigureError as err:
+        raise InputError(str(err)) from None
+    mime = "application/pdf" if fmt == "pdf" else "image/png"
+    return _pack({"mime": mime, "bytes": len(data), "seconds": time.time() - t0},
+                 arrays={"file": np.frombuffer(data, dtype=np.uint8)})
+
+
+def _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour, preset, columns,
+                 q_unit, profile, smooth, xlim, ylim):
     t0 = time.time()
     if profile:
         progress(f"Drawing the {fmt.upper()} figure…")
-        x, y = _profile_series(kind, q_unit, smooth)
-        data = figures.profile(x, y, figures.axis_label(kind, q_unit), log=log,
-                               preset=preset, columns=int(columns), fmt=fmt)
+        x, raw, smoothed = _profile_series(kind, q_unit, smooth)
+        data = figures.profile(x, raw, figures.axis_label(kind, q_unit),
+                               smoothed=smoothed if int(smooth) > 1 else None,
+                               log=log, preset=preset, columns=int(columns),
+                               fmt=fmt, xlim=xlim)
     else:
         df, X, Y, counts = _map_arrays(kind, q_unit)
         progress(f"Drawing {len(counts):,} pixels into the {fmt.upper()} "
@@ -457,10 +515,9 @@ def cmd_export_figure(kind, fmt="png", log=True, cmap="viridis", vmin=None,
             X.ravel(), Y.ravel(), counts,
             figures.axis_label(xc, q_unit), figures.axis_label(yc, q_unit),
             log=log, cmap=cmap, vmin=vmin, vmax=vmax, zero_colour=zero_colour,
-            preset=preset, columns=int(columns), fmt=fmt, pixel=_pitch(X, Y))
-    mime = "application/pdf" if fmt == "pdf" else "image/png"
-    return _pack({"mime": mime, "bytes": len(data), "seconds": time.time() - t0},
-                 arrays={"file": np.frombuffer(data, dtype=np.uint8)})
+            preset=preset, columns=int(columns), fmt=fmt, pixel=_pitch(X, Y),
+            xlim=xlim, ylim=ylim)
+    return data, t0
 
 
 COMMANDS = {
