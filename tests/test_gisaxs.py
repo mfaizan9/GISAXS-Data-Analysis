@@ -394,39 +394,48 @@ def test_measure_peak_interpolates_half_maximum():
 # ---------------------------------------------------------------------------
 
 def test_shift_detector_puts_the_direct_beam_at_the_origin():
-    # A detector whose direct beam sits at (0, y0) instead of the origin: the
-    # specular spot then shows y0 above L tan(2 alpha_i).
-    y0 = 1.5
+    # A detector whose direct beam sits at (x0, y0) instead of the origin: the
+    # specular spot then shows at x0, y0 + L tan(2 alpha_i).
+    x0, y0 = 0.4, 1.5
     df = make_frame(5, 60, 0.1, -0.2, -1.0)
-    shifted = gisaxs.shift_detector(df, y0)
+    shifted = gisaxs.shift_detector(df, x0, y0)
+    np.testing.assert_allclose(shifted["x"], df["x"] - x0)
     np.testing.assert_allclose(shifted["y"], df["y"] - y0)
-    np.testing.assert_allclose(shifted["x"], df["x"])
     assert shifted.attrs == df.attrs
     assert np.allclose(df["y"].iloc[:3], -1.0)                  # input untouched
-    # the offset follows from the spot, and removing it puts the spot at alpha_i
-    y_spot = gisaxs.specular_y(TOY) + y0
-    assert gisaxs.direct_beam_offset(y_spot, TOY) == pytest.approx(y0)
-    assert gisaxs.pixel(0.0, y_spot, TOY)["alpha_f"] > TOY.alpha_i
-    assert gisaxs.pixel(0.0, y_spot - y0, TOY)["alpha_f"] == pytest.approx(TOY.alpha_i, abs=1e-12)
+    np.testing.assert_allclose(gisaxs.shift_detector(df, y0=y0)["x"], df["x"])
+    # the offset follows from the spot, and removing it puts the spot at
+    # phi_f = 0, alpha_f = alpha_i
+    x_spot, y_spot = x0, gisaxs.specular_y(TOY) + y0
+    assert gisaxs.direct_beam_offset(x_spot, y_spot, TOY) == pytest.approx((x0, y0))
+    before = gisaxs.pixel(x_spot, y_spot, TOY)
+    assert before["alpha_f"] > TOY.alpha_i and before["phi_f"] > 0
+    after = gisaxs.pixel(x_spot - x0, y_spot - y0, TOY)
+    assert after["alpha_f"] == pytest.approx(TOY.alpha_i, abs=1e-12)
+    assert after["phi_f"] == pytest.approx(0.0, abs=1e-12)
     # the whole conversion is the usual one on the shifted frame
     got = gisaxs.convert(shifted, TOY)
-    want = gisaxs.pixel(df["x"].to_numpy(), df["y"].to_numpy() - y0, TOY)
-    for name in ("alpha_f", "qz", "kfx"):
+    want = gisaxs.pixel(df["x"].to_numpy() - x0, df["y"].to_numpy() - y0, TOY)
+    for name in ("phi_f", "alpha_f", "qy", "qz", "kfx"):
         np.testing.assert_allclose(got[name], want[name])
 
 
-def offset_frame(y_db=1.2, beam=True, clip=False, L=1600.0, alpha_i=0.3,
-                 pitch=0.075):
-    """A raw frame whose direct beam sits at (0, y_db) instead of the origin,
-    with the specular spot at y_db + L tan(2 alpha_i).  clip cuts the lower
-    half of the direct beam off, as a beamstop edge does."""
+def offset_frame(y_db=1.2, x_db=0.0, beam=True, clip=False, spot_dx=0.0,
+                 L=1600.0, alpha_i=0.3, pitch=0.075):
+    """A raw frame whose direct beam sits at (x_db, y_db) instead of the
+    origin, with the specular spot at (x_db + spot_dx, y_db + L tan 2 alpha_i).
+    clip cuts the lower half of the direct beam off, as a beamstop edge does;
+    spot_dx moves the spot sideways from the beam, as a sample tilted about
+    the beam would."""
     geom = Geometry(L=L, alpha_i=alpha_i, wavelength=0.15418)
-    y_spot = y_db + gisaxs.specular_y(geom)
+    x_spot, y_spot = x_db + spot_dx, y_db + gisaxs.specular_y(geom)
     df = make_frame(81, 360, pitch, -3.0, -2.0)
     X, Y = df["x"].to_numpy(), df["y"].to_numpy()
-    counts = 2.0 + 5000.0 * np.exp(-0.5 * (X / 0.2) ** 2 - 0.5 * ((Y - y_spot) / 0.25) ** 2)
+    counts = 2.0 + 5000.0 * np.exp(-0.5 * ((X - x_spot) / 0.2) ** 2
+                                   - 0.5 * ((Y - y_spot) / 0.25) ** 2)
     if beam:
-        direct = 3000.0 * np.exp(-0.5 * (X / 0.2) ** 2 - 0.5 * ((Y - y_db) / 0.3) ** 2)
+        direct = 3000.0 * np.exp(-0.5 * ((X - x_db) / 0.2) ** 2
+                                 - 0.5 * ((Y - y_db) / 0.3) ** 2)
         if clip:
             direct[Y < y_db + 0.05] = 0.0
             counts[Y < y_db + 0.05] = 0.0          # the beamstop's shadow
@@ -436,31 +445,56 @@ def offset_frame(y_db=1.2, beam=True, clip=False, L=1600.0, alpha_i=0.3,
 
 
 def test_offset_from_a_clean_direct_beam():
-    df, geom = offset_frame(y_db=1.2)
+    df, geom = offset_frame(y_db=1.2, x_db=0.3)
     got = spot.find_offset(df, geom)
-    assert got["method"] == "direct" and got["direct"]["ok"]
+    d = got["direct"]
+    assert got["method_x"] == got["method_y"] == "direct" and d["ok_x"] and d["ok_y"]
+    assert got["x0"] == pytest.approx(0.3, abs=0.5 * 0.075)
     assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
-    assert abs(got["direct"]["error_pixels"]) <= 1
-    assert got["alpha_f_spot"] == pytest.approx(geom.alpha_i, abs=got["pixel_deg"])
-    assert got["spot"]["pixels_off"] == pytest.approx(1.2 / 0.075, abs=0.5)
+    assert abs(d["error_x"]) <= 1 and abs(d["error_y"]) <= 1
+    assert got["phi_f_spot"] == pytest.approx(0.0, abs=got["pixel_phi_deg"])
+    assert got["alpha_f_spot"] == pytest.approx(geom.alpha_i, abs=got["pixel_alpha_deg"])
+    assert got["spot"]["pixels_off_x"] == pytest.approx(0.3 / 0.075, abs=0.5)
+    assert got["spot"]["pixels_off_y"] == pytest.approx(1.2 / 0.075, abs=0.5)
 
 
 def test_offset_falls_back_to_the_spot_when_the_direct_beam_is_clipped():
-    df, geom = offset_frame(y_db=1.2, clip=True)
+    df, geom = offset_frame(y_db=1.2, x_db=-0.2, clip=True)
     got = spot.find_offset(df, geom)
-    # the clipped beam's centroid sits too high: the spot then misses alpha_i
-    assert got["direct"] is not None and not got["direct"]["ok"]
-    assert got["direct"]["y0"] > 1.2 + 0.075
-    assert got["method"] == "specular"
+    d = got["direct"]
+    # the clipped beam's centroid sits too high: the spot then misses alpha_i;
+    # sideways the beam is whole, and agrees with the spot
+    assert d is not None and d["ok_x"] and not d["ok_y"]
+    assert d["y0"] > 1.2 + 0.075
+    assert got["method_x"] == "direct" and got["method_y"] == "specular"
+    assert got["x0"] == pytest.approx(d["x0"])
+    assert got["x0"] == pytest.approx(-0.2, abs=0.5 * 0.075)
     assert got["y0"] == pytest.approx(got["specular"]["y0"])
     assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
     assert got["alpha_f_spot"] == pytest.approx(geom.alpha_i, abs=1e-4)
 
 
-def test_offset_from_the_spot_when_no_direct_beam_shows():
-    df, geom = offset_frame(y_db=1.2, beam=False)
+def test_offset_puts_a_sideways_spot_at_phi_f_zero():
+    # The spot sits 0.3 mm (4 pixels) to the side of the direct beam: measured
+    # from the beam it misses phi_f = 0, so x0 comes from the spot itself.
+    df, geom = offset_frame(y_db=1.2, x_db=0.1, spot_dx=0.3)
     got = spot.find_offset(df, geom)
-    assert got["direct"] is None and got["method"] == "specular"
+    d = got["direct"]
+    assert not d["ok_x"] and d["ok_y"] and abs(d["error_x"]) > 1
+    assert got["method_x"] == "specular" and got["method_y"] == "direct"
+    assert got["x0"] == pytest.approx(got["spot"]["x"])
+    assert got["x0"] == pytest.approx(0.4, abs=0.5 * 0.075)
+    assert got["phi_f_spot"] == pytest.approx(0.0, abs=1e-9)
+    assert got["specular"]["phi_f_spot"] == pytest.approx(0.0, abs=1e-9)
+    assert got["specular"]["alpha_f_spot"] == pytest.approx(geom.alpha_i, abs=1e-9)
+
+
+def test_offset_from_the_spot_when_no_direct_beam_shows():
+    df, geom = offset_frame(y_db=1.2, x_db=0.3, beam=False)
+    got = spot.find_offset(df, geom)
+    assert got["direct"] is None
+    assert got["method_x"] == got["method_y"] == "specular"
+    assert got["x0"] == pytest.approx(0.3, abs=0.5 * 0.075)
     assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
 
 
@@ -708,33 +742,42 @@ def test_bridge_end_to_end(tmp_path):
     assert bad.get("user_error") and "smaller" in bad["error"]
 
     # The conversion finds the direct-beam offset by itself: the direct beam
-    # shows at y ~ 3.76 mm but is clipped by the beamstop, so measured from it
-    # the spot misses alpha_i; the spot gives y0 instead
+    # shows at (-0.05, 3.76) mm but is clipped by the beamstop, and measured
+    # from it the spot misses both alpha_i and phi_f = 0 by ~3 pixels; the spot
+    # gives x0 and y0 instead
     pre, _ = call("convert")                                # corrects by default
     pre = pre["offset"]
     d = pre["direct"]
     assert d is not None and d["y0"] == pytest.approx(3.76, abs=0.05)
-    assert not d["ok"] and abs(d["error_pixels"]) > 1
-    assert pre["method"] == "specular"
+    assert d["x0"] == pytest.approx(-0.05, abs=0.05)
+    assert not d["ok_y"] and abs(d["error_y"]) > 1
+    assert not d["ok_x"] and abs(d["error_x"]) > 1
+    assert pre["method_x"] == pre["method_y"] == "specular"
+    assert pre["x0"] == pytest.approx(pre["spot"]["x"])
+    assert pre["x0"] == pytest.approx(0.18, abs=0.01)
     assert pre["y0"] == pytest.approx(pre["spot"]["y"] - pre["spot"]["predicted_y"])
     assert pre["y0"] == pytest.approx(3.52, abs=0.01)
     assert pre["spot"]["alpha_f"] == pytest.approx(0.426, abs=1e-3)       # before
-    assert pre["alpha_f_spot"] == pytest.approx(0.299991444658313, abs=1e-4)  # after
+    assert pre["spot"]["phi_f"] == pytest.approx(0.0064, abs=1e-3)
+    assert pre["alpha_f_spot"] == pytest.approx(0.299991444658313, abs=1e-9)  # after
+    assert pre["phi_f_spot"] == pytest.approx(0.0, abs=1e-12)
 
     meta, _ = call("convert")                               # the same again
-    assert meta["y0"] == pytest.approx(pre["y0"]) and meta["offset"]["method"] == "specular"
+    assert meta["y0"] == pytest.approx(pre["y0"]) and meta["x0"] == pytest.approx(pre["x0"])
+    assert meta["offset"]["method_y"] == "specular"
     assert meta["offset_error"] is None
     assert meta["alpha_i"] == pytest.approx(0.299991444658313)   # alpha_i untouched
     assert meta["steps"]["8"]["rows_kept"] == 878
     # the spot is now where alpha_i predicts it: the default window finds it
     meta, _ = call("apply_mask", kind="spot", n_sigma=4, window=15)
     assert meta["alpha0"] == pytest.approx(0.299991444658313, abs=meta["pixel_alpha"])
+    assert meta["phi0"] == pytest.approx(0.0, abs=meta["pixel_phi"])
     header = gisaxs.export_header(bridge._export_meta(bridge.S.cut), "nm-1")
-    assert any(line.startswith("# Pixels shifted: y_mm = y in the .dat file - 3.5188 mm")
+    assert any(line.startswith("# Pixels shifted: x_mm = x - 0.1799 mm and y_mm = y - 3.5188 mm")
                and "from the specular spot" in line for line in header)
 
     meta, _ = call("convert", correct_offset=False)
-    assert meta["y0"] == 0 and meta["offset"] is None
+    assert meta["x0"] == meta["y0"] == 0 and meta["offset"] is None
     assert meta["steps"]["8"]["rows_kept"] == 925
 
     # no specular spot to be found: converted as it is, with the reason
@@ -742,7 +785,7 @@ def test_bridge_end_to_end(tmp_path):
     bridge.S.raw = saved.assign(intensity=2.0)
     try:
         meta, _ = call("convert")
-        assert meta["offset"] is None and meta["y0"] == 0
+        assert meta["offset"] is None and meta["x0"] == meta["y0"] == 0
         assert "could not find the specular spot" in meta["offset_error"]
         assert meta["steps"]["8"]["rows_kept"] == 925
     finally:

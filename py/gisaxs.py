@@ -223,54 +223,25 @@ def specular_y(geom):
     return geom.L * np.tan(np.radians(2.0 * geom.alpha_i))
 
 
-def shift_detector(df, y0):
-    """Move every pixel down by y0 [mm]: y -> y - y0, on a copy.
+def shift_detector(df, x0=0.0, y0=0.0):
+    """Move every pixel by (-x0, -y0) [mm]: x -> x - x0, y -> y - y0, on a copy.
 
-    For a detector whose direct beam is not at the origin but at (0, y0): after
-    the shift, y is measured from the direct beam again, as the formulas assume.
+    For a detector whose direct beam is not at the origin but at (x0, y0): after
+    the shift, x and y are measured from the direct beam again, as the formulas
+    assume.
     """
     out = df.copy()
+    out["x"] = out["x"] - float(x0)
     out["y"] = out["y"] - float(y0)
     out.attrs = dict(df.attrs)
     return out
 
 
-def direct_beam_offset(y_s, geom):
-    """Where the direct beam must be for the specular spot measured at height
-    y_s to sit at alpha_f = alpha_i: y0 = y_s - L tan(2 alpha_i) [mm]."""
-    return float(y_s) - specular_y(geom)
-
-
-def shift_detector(df, y0):
-    """Move every pixel down by y0 [mm]: y -> y - y0, on a copy.
-
-    For a detector whose direct beam is not at the origin but at (0, y0): after
-    the shift, y is measured from the direct beam again, as the formulas assume.
-    """
-    out = df.copy()
-    out["y"] = out["y"] - float(y0)
-    out.attrs = dict(df.attrs)
-    return out
-
-
-def direct_beam_offset(y_s, geom):
-    """Where the direct beam must be for the specular spot measured at height
-    y_s to sit at alpha_f = alpha_i: y0 = y_s - L tan(2 alpha_i) [mm]."""
-    return float(y_s) - specular_y(geom)
-
-
-def alpha_i_from_specular(x_s, y_s, L):
-    """The incidence angle that puts the specular spot where it was measured.
-
-    The specular beam leaves the sample at 2 alpha_i from the incident beam,
-    so 2 alpha_i is the angle between the beam direction X and the spot's
-    position vector r_s = L X + x_s Y + y_s Z:
-
-        alpha_i = atan2(sqrt(x_s^2 + y_s^2), L) / 2      [deg]
-
-    For a spot at x_s = 0 this is the inverse of y = L tan(2 alpha_i).
-    """
-    return 0.5 * float(np.degrees(np.arctan2(np.hypot(x_s, y_s), L)))
+def direct_beam_offset(x_s, y_s, geom):
+    """Where the direct beam must be for the specular spot measured at
+    (x_s, y_s) to sit at phi_f = 0, alpha_f = alpha_i:
+    x0 = x_s, y0 = y_s - L tan(2 alpha_i) [mm]."""
+    return float(x_s), float(y_s) - specular_y(geom)
 
 
 def horizon_cut(df, geom):

@@ -167,36 +167,43 @@ file keeps 925 × 1028 = 950,900 pixels.
 ## The direct-beam offset (found automatically)
 
 The formulas assume the direct beam at the detector origin; then the specular
-spot sits at $\alpha_f = \alpha_i$, i.e. at $y = L\tan 2\alpha_i$. On some
-instruments the direct beam is not at the origin but above it, at
-$(0,\ y_0)$ (in the instrument software it shows at $x = 0$ and a positive
-$y$). Every $\alpha_f$ is then off, and features such as Yoneda peaks land at
-different $\alpha_f$ in frames measured at different $\alpha_i$.
+spot sits at $\varphi_f = 0$, $\alpha_f = \alpha_i$, i.e. at $x = 0$,
+$y = L\tan 2\alpha_i$. On some instruments the direct beam is not at the
+origin but at $(x_0,\ y_0)$, usually above it (in the instrument software it
+shows at a positive $y$) and sometimes to one side. Every $\alpha_f$ and
+$\varphi_f$ is then off, and features such as Yoneda peaks land at different
+$\alpha_f$ in frames measured at different $\alpha_i$.
 
-When converting (step 5), the app finds $y_0$ from the data and moves every
-pixel down, $y \to y - y_0$, keeping the `.pro` $\alpha_i$. Nothing has to be
-chosen or entered.
-$y_0$ is estimated two ways, and both are checked on the backend
-(`spot.find_offset`):
+When converting (step 5), the app finds $(x_0,\ y_0)$ from the data and moves
+every pixel, $x \to x - x_0$ and $y \to y - y_0$, keeping the `.pro`
+$\alpha_i$. Nothing has to be chosen or entered. The offset is estimated two
+ways, and both are checked on the backend (`spot.find_offset`), for each axis
+on its own:
 
 1. **The direct beam itself**, if it shows in the frame: its centroid gives
-   $y_0$. It is accepted if, measured from it, the specular spot sits at
-   $\alpha_f = \alpha_i$ within one pixel.
-2. **The specular spot**: $y_0 = y_s - L\tan 2\alpha_i$, which puts the spot at
+   $(x_0,\ y_0)$. An axis takes it if, measured from it, the specular spot
+   sits at its target on that axis within one pixel: $\varphi_f = 0$ for $x$,
+   $\alpha_f = \alpha_i$ for $y$.
+2. **The specular spot** at $(x_s,\ y_s)$: $x_0 = x_s$ and
+   $y_0 = y_s - L\tan 2\alpha_i$, which put the spot at $\varphi_f = 0$,
    $\alpha_f = \alpha_i$ by construction.
 
-The direct beam is used when it passes the check, being the measured origin.
-Otherwise the spot is used: the direct beam was not found, or part of it is
-behind the beamstop, which pulls its centroid away. Both spots are located
-on the raw detector the same way as the spot mask (window, climbing to the
-local maximum, centroid above half maximum). The direct beam is searched for
-where the spot says it should be.
+The direct beam is used where it passes the check, being the measured origin.
+Otherwise the spot is used: the direct beam was not found, part of it is
+behind the beamstop (which pulls its centroid away), or the spot sits to one
+side of it. Both spots are located on the raw detector the same way as the
+spot mask (window, climbing to the local maximum, centroid above half
+maximum). The direct beam is searched for where the spot says it should be.
+
+On the test frame the direct beam shows at $(-0.05,\ 3.76)$ mm, behind the
+beamstop's edge; measured from it the spot misses by about 3 pixels on both
+axes, so the spot sets both: $x_0 = 0.180$ mm, $y_0 = 3.519$ mm.
 
 If the specular spot cannot be found, the frame is converted as it is and
-step 5 says so. After the shift, $y$ in the maps and the exported table is
-measured from the direct beam. The raw map of step 4 keeps the file's $y$, and
-the table's header records $y_0$ and how it was found. $\alpha_i$ is never
-changed, so $q_z$ moves down with the pixels.
+step 5 says so. After the shift, $x$ and $y$ in the maps and the exported
+table are measured from the direct beam. The raw map of step 4 keeps the
+file's $x$ and $y$, and the table's header records $x_0$, $y_0$ and how they
+were found. $\alpha_i$ is never changed, so $q_z$ moves down with the pixels.
 
 For the test file the specular spot is at $(x_s, y_s) = (0.180, 20.274)$ mm
 instead of $y = 16.755$ mm ($\alpha_f = 0.4260°$ with $\alpha_i = 0.3000°$):

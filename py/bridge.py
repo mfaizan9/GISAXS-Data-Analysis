@@ -52,7 +52,7 @@ class Session:
         self.summary = None      # gisaxs.instrument_summary()
         self.geom = None         # from the .pro file
         self.geom_used = None    # what the conversion used (alpha_i may be fixed)
-        self.offset = None       # how alpha_i was fixed from the specular spot
+        self.offset = None       # the direct-beam offset (spot.find_offset)
         self.dat_name = None
         self.raw = None          # x, y, intensity[, variance]; full detector
         self.cut = None          # converted, rows below the horizon dropped
@@ -237,20 +237,20 @@ def _find_offset():
 
 
 def cmd_convert(correct_offset=True):
-    """Steps 5-8.  With correct_offset, every pixel is first moved down by the
-    direct-beam offset y0 found automatically (spot.find_offset), so the direct
-    beam is at the origin and the specular spot at alpha_f = alpha_i.  If the
-    specular spot cannot be found, the frame is converted as it is and
-    offset_error says why."""
+    """Steps 5-8.  With correct_offset, every pixel is first moved by the
+    direct-beam offset (x0, y0) found automatically (spot.find_offset), so the
+    direct beam is at the origin and the specular spot at phi_f = 0,
+    alpha_f = alpha_i.  If the specular spot cannot be found, the frame is
+    converted as it is and offset_error says why."""
     _require("raw")
-    geom, offset, shift, offset_error = S.geom, None, 0.0, None
+    geom, offset, x0, y0, offset_error = S.geom, None, 0.0, 0.0, None
     if correct_offset:
         try:
             offset = _find_offset()
-            shift = offset["y0"]
+            x0, y0 = offset["x0"], offset["y0"]
         except InputError as err:
             offset_error = str(err)
-    base = gisaxs.shift_detector(S.raw, shift) if shift else S.raw
+    base = gisaxs.shift_detector(S.raw, x0, y0) if (x0 or y0) else S.raw
     n = len(base)
     df = base.copy()
     steps = {}
@@ -295,7 +295,7 @@ def cmd_convert(correct_offset=True):
     S.mask_kind, S.mask_text = "none", ""
     S.version += 1
     return _pack({"steps": steps, "version": S.version,
-                  "alpha_i": geom.alpha_i, "y0": shift, "offset": offset,
+                  "alpha_i": geom.alpha_i, "x0": x0, "y0": y0, "offset": offset,
                   "offset_error": offset_error})
 
 
@@ -311,12 +311,20 @@ def _export_meta(df, mask_text=""):
     shift = ""
     o = S.offset
     if o:
-        how = ("the direct beam seen in the frame" if o["method"] == "direct"
-               else "the specular spot, y0 = y_s - L tan(2 alpha_i)")
-        shift = (f"y_mm = y in the .dat file - {o['y0']:.4f} mm, so the direct "
-                 f"beam is at the origin (y0 from {how}); the specular spot, "
-                 f"measured at x = {o['spot']['x']:.4f} mm, y = {o['spot']['y']:.4f} mm "
-                 f"in the file, is then at alpha_f = {o['alpha_f_spot']:.6f} deg")
+        beam = "the direct beam seen in the frame"
+        if o["method_x"] == o["method_y"] == "direct":
+            how = f"x0 and y0 from {beam}"
+        elif o["method_x"] == o["method_y"]:
+            how = "x0 and y0 from the specular spot: x0 = x_s, y0 = y_s - L tan(2 alpha_i)"
+        else:
+            how = ("x0 from " + (beam if o["method_x"] == "direct" else "the specular spot, x0 = x_s")
+                   + ", y0 from " + (beam if o["method_y"] == "direct"
+                                     else "the specular spot, y0 = y_s - L tan(2 alpha_i)"))
+        shift = (f"x_mm = x - {o['x0']:.4f} mm and y_mm = y - {o['y0']:.4f} mm, with x, y "
+                 f"as in the .dat file, so the direct beam is at the origin ({how}); "
+                 f"the specular spot, measured at x = {o['spot']['x']:.4f} mm, "
+                 f"y = {o['spot']['y']:.4f} mm in the file, is then at "
+                 f"phi_f = {o['phi_f_spot']:.6f} deg, alpha_f = {o['alpha_f_spot']:.6f} deg")
     return {
         "shift_text": shift,
         "dat_name": S.dat_name, "pro_name": S.pro_name,

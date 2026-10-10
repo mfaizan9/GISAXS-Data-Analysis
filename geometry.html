@@ -239,14 +239,14 @@
 
 <section>
   <h2>Direct-beam offset</h2>
-  <p>The equations above need the direct beam at the detector origin. On some instruments it sits above it, at \((0,\ y_0)\); then the specular spot is not at \(\alpha_f = \alpha_i\). Before converting, the app finds \(y_0\) from the data and moves every pixel down,</p>
-  $$y \;\to\; y - y_0 ,$$
-  <p>keeping \(\alpha_i\) from the <code>.pro</code> file. Two estimates of \(y_0\) are made and checked:</p>
+  <p>The equations above need the direct beam at the detector origin. On some instruments it sits at \((x_0,\ y_0)\) instead, usually above the origin and sometimes to one side; then the specular spot is not at \(\varphi_f = 0,\ \alpha_f = \alpha_i\). Before converting, the app finds \((x_0,\ y_0)\) from the data and moves every pixel,</p>
+  $$x \;\to\; x - x_0 ,\qquad y \;\to\; y - y_0 ,$$
+  <p>keeping \(\alpha_i\) from the <code>.pro</code> file. Two estimates are made, and each axis is checked on its own:</p>
   <ol class="tight">
-    <li><b>The direct beam</b>, if it shows in the frame: its centroid gives \(y_0\). It is used if, measured from it, the specular spot sits at \(\alpha_f = \alpha_i\) within one pixel.</li>
-    <li><b>The specular spot</b> at height \(y_s\) otherwise:
-      $$y_0 = y_s - L\tan 2\alpha_i ,$$
-      which puts the spot at \(\alpha_f = \alpha_i\) exactly. This is used when the direct beam does not show, or when part of it is hidden behind the beamstop, which pulls its centroid away.</li>
+    <li><b>The direct beam</b>, if it shows in the frame: its centroid gives \((x_0,\ y_0)\). An axis takes it if, measured from it, the specular spot sits at its target on that axis within one pixel: \(\varphi_f = 0\) for \(x\), \(\alpha_f = \alpha_i\) for \(y\).</li>
+    <li><b>The specular spot</b> at \((x_s,\ y_s)\) otherwise:
+      $$x_0 = x_s ,\qquad y_0 = y_s - L\tan 2\alpha_i ,$$
+      which puts the spot at \(\varphi_f = 0,\ \alpha_f = \alpha_i\) exactly. This is used when the direct beam does not show, when part of it is hidden behind the beamstop, which pulls its centroid away, or when the spot sits to one side of it.</li>
   </ol>
   <p>Both spots are located on the raw detector: a window around where they are expected, moved onto the brightest pixel, then the centroid of the points above half maximum.</p>
 </section>

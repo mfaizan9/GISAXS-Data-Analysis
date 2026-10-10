@@ -21,8 +21,8 @@ detector is assumed: the pixel widths are measured from the frame.
 
 The same measurement also runs on the raw detector frame, in x and y (mm),
 before any angle is computed: find_offset() uses it on the specular spot and
-on the direct beam to find how far the direct beam sits above the detector
-origin.
+on the direct beam to find where the direct beam sits on the detector,
+(x0, y0), when it is not at the origin.
 """
 
 import warnings
@@ -290,14 +290,15 @@ def find_on_detector(df, L, alpha_i, window=DEFAULT_WINDOW, follow_peak=True):
     }
 
 
-def find_direct_beam(df, y_guess, window=DEFAULT_WINDOW, follow_peak=True):
+def find_direct_beam(df, y_guess, window=DEFAULT_WINDOW, follow_peak=True,
+                     x_guess=0.0):
     """Locate the direct beam on the raw detector, if it shows at all.
 
     It is usually behind a beamstop, and an edge of it may be cut off, which
     pulls the centroid away from the true centre: use it as a cross-check.
-    The search starts at x = 0, y = y_guess [mm].
+    The search starts at x = x_guess, y = y_guess [mm].
     """
-    got = _locate(df, ("x", "y"), (0.0, y_guess), window, follow_peak, "mm",
+    got = _locate(df, ("x", "y"), (x_guess, y_guess), window, follow_peak, "mm",
                   ("x", "y"))
     return {
         "x0": got["h0"], "y0": got["v0"],
@@ -308,69 +309,83 @@ def find_direct_beam(df, y_guess, window=DEFAULT_WINDOW, follow_peak=True):
 
 
 def find_offset(df, geom, window=DEFAULT_WINDOW, tolerance=OFFSET_TOLERANCE):
-    """How far the direct beam sits above the detector origin, found from data.
+    """Where the direct beam sits on the detector, (x0, y0), found from data.
 
-    The formulas assume the direct beam at the origin, and then the specular
-    spot sits at alpha_f = alpha_i (y = L tan 2 alpha_i).  When the direct beam
-    is really at (0, y0), every pixel has to move down by y0.  Two estimates of
-    y0 are made on the raw frame df and checked:
+    The formulas assume the direct beam at the origin; then the specular spot
+    sits at phi_f = 0, alpha_f = alpha_i (x = 0, y = L tan 2 alpha_i).  When
+    the direct beam is really at (x0, y0), every pixel has to move by
+    (-x0, -y0).  Two estimates are made on the raw frame df and checked, for
+    each axis on its own:
 
-      1. the direct beam itself, if it shows: y0 = its height.  Accepted if,
-         measured from it, the specular spot sits at alpha_f = alpha_i within
-         `tolerance` pixels.
-      2. the specular spot: y0 = y_s - L tan(2 alpha_i), which puts the spot
-         at alpha_f = alpha_i by construction.
+      1. the direct beam itself, if it shows: its centroid.  Used for an axis
+         if, measured from it, the specular spot sits at its target on that
+         axis (phi_f = 0 for x, alpha_f = alpha_i for y) within `tolerance`
+         pixels.
+      2. the specular spot at (x_s, y_s): x0 = x_s, y0 = y_s - L tan(2 alpha_i),
+         which puts the spot at phi_f = 0, alpha_f = alpha_i by construction.
 
-    The direct beam is used when it passes the check, being the measured
-    origin; otherwise (not found, or partly behind the beamstop so that its
-    centroid is off) the spot is.  Raises SpotError if the spot is not found.
+    The direct beam is preferred, being the measured origin; where it fails
+    the check (not found, or partly behind the beamstop so that its centroid
+    is off) the spot is used.  Raises SpotError if the spot is not found.
 
-    Returns a dict: the spot, both checks ("direct" is None if the beam does
-    not show), the chosen "method" ("direct" or "specular") and "y0" [mm].
+    Returns a dict: the spot, both estimates ("direct" is None if the beam does
+    not show), the method used for each axis ("direct" or "specular"), x0 and
+    y0 [mm], and where the spot then sits (phi_f_spot, alpha_f_spot [deg]).
     """
     found = find_on_detector(df, geom.L, geom.alpha_i, window=window)
     x_s, y_s = found["x0"], found["y0"]
-    pixel = float(np.degrees(found["pixel_y"] / geom.L))      # one pixel [deg]
+    pixel_phi = float(np.degrees(found["pixel_x"] / geom.L))    # one pixel [deg]
+    pixel_alpha = float(np.degrees(found["pixel_y"] / geom.L))
 
-    def spot_after(y0):
-        """alpha_f of the spot once every pixel has moved down by y0."""
-        return float(exit_angles(x_s, y_s - y0, geom)[1])
+    def spot_after(x0, y0):
+        """phi_f, alpha_f of the spot once every pixel has moved by (-x0, -y0)."""
+        phi, alpha = exit_angles(x_s - x0, y_s - y0, geom)
+        return float(phi), float(alpha)
 
     predicted_y = float(specular_y(geom))                     # L tan 2 alpha_i
-    phi_raw, alpha_raw = exit_angles(x_s, y_s, geom)
+    phi_raw, alpha_raw = spot_after(0.0, 0.0)
     spot = {
         "x": x_s, "y": y_s, "fwhm_x": found["fwhm_x"], "fwhm_y": found["fwhm_y"],
-        "alpha_f": float(alpha_raw), "phi_f": float(phi_raw),
+        "phi_f": phi_raw, "alpha_f": alpha_raw,
         "predicted_y": predicted_y,
-        "pixels_off": float((y_s - predicted_y) / found["pixel_y"]),
+        "pixels_off_x": float(x_s / found["pixel_x"]),
+        "pixels_off_y": float((y_s - predicted_y) / found["pixel_y"]),
     }
 
-    y0_spec = float(direct_beam_offset(y_s, geom))
-    a = spot_after(y0_spec)
-    specular = {"y0": y0_spec, "alpha_f_spot": a,
-                "error_pixels": (a - geom.alpha_i) / pixel}
+    x0_spec, y0_spec = direct_beam_offset(x_s, y_s, geom)
+    phi, alpha = spot_after(x0_spec, y0_spec)
+    specular = {"x0": x0_spec, "y0": y0_spec, "phi_f_spot": phi, "alpha_f_spot": alpha}
 
     direct = None
     try:
-        # Look where the spot says the direct beam should be.
-        db = find_direct_beam(df, y0_spec, window=window)
-        a = spot_after(db["y0"])
-        error = (a - geom.alpha_i) / pixel
-        direct = dict(db, alpha_f_spot=a, error_pixels=error,
-                      ok=bool(abs(error) <= tolerance))
+        # Look where the spot says the direct beam should be.  Each axis is
+        # checked with the other one taken from the spot.
+        db = find_direct_beam(df, y0_spec, window=window, x_guess=x0_spec)
+        phi = spot_after(db["x0"], y0_spec)[0]
+        alpha = spot_after(x0_spec, db["y0"])[1]
+        error_x = phi / pixel_phi
+        error_y = (alpha - geom.alpha_i) / pixel_alpha
+        direct = dict(db, phi_f_spot=phi, alpha_f_spot=alpha,
+                      error_x=error_x, error_y=error_y,
+                      ok_x=bool(abs(error_x) <= tolerance),
+                      ok_y=bool(abs(error_y) <= tolerance))
     except SpotError:
         pass
 
-    if direct is not None and direct["ok"]:
-        method, y0 = "direct", direct["y0"]
-    else:
-        method, y0 = "specular", y0_spec
+    use_x = direct is not None and direct["ok_x"]
+    use_y = direct is not None and direct["ok_y"]
+    x0 = direct["x0"] if use_x else x0_spec
+    y0 = direct["y0"] if use_y else y0_spec
+    phi_f_spot, alpha_f_spot = spot_after(x0, y0)
     return {
-        "alpha_i": float(geom.alpha_i), "pixel_deg": pixel,
+        "alpha_i": float(geom.alpha_i),
+        "pixel_phi_deg": pixel_phi, "pixel_alpha_deg": pixel_alpha,
         "tolerance_pixels": float(tolerance),
         "spot": spot, "direct": direct, "specular": specular,
-        "method": method, "y0": float(y0),
-        "alpha_f_spot": spot_after(y0),
+        "method_x": "direct" if use_x else "specular",
+        "method_y": "direct" if use_y else "specular",
+        "x0": float(x0), "y0": float(y0),
+        "phi_f_spot": phi_f_spot, "alpha_f_spot": alpha_f_spot,
     }
 
 
