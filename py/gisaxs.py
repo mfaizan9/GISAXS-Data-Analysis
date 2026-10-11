@@ -244,6 +244,21 @@ def direct_beam_offset(x_s, y_s, geom):
     return float(x_s), float(y_s) - specular_y(geom)
 
 
+def alpha_i_from_specular(x_s, y_s, L):
+    """The incidence angle that puts the specular spot where it was measured,
+    with x_s, y_s measured from the direct beam [mm].
+
+    The specular beam leaves the sample at 2 alpha_i from the incident beam,
+    so 2 alpha_i is the angle between the beam direction X and the spot's
+    position r_s = L X + x_s Y + y_s Z:
+
+        alpha_i = atan2(sqrt(x_s^2 + y_s^2), L) / 2      [deg]
+
+    For a spot at x_s = 0 this is the inverse of y = L tan(2 alpha_i).
+    """
+    return 0.5 * float(np.degrees(np.arctan2(np.hypot(x_s, y_s), L)))
+
+
 def horizon_cut(df, geom):
     """Drop every whole detector row whose alpha_f at x = 0 is below 0.
 
@@ -510,6 +525,8 @@ def export_header(meta, q_unit="nm-1", when=None):
         "# x_mm, y_mm: position on the detector measured from the direct beam",
         "# nan counts = dead or masked pixel; 0 = a measured zero",
     ]
+    if meta.get("alpha_text"):
+        lines.insert(5, f"# Incidence angle measured: {meta['alpha_text']}")
     if meta.get("shift_text"):
         lines.insert(5, f"# Pixels shifted: {meta['shift_text']}")
     if meta.get("mask"):

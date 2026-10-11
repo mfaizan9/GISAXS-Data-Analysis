@@ -13,8 +13,10 @@ module only keeps the frames between steps, so changing a display option never
 re-runs the conversion.
 """
 
+import dataclasses
 import json
 import math
+import re
 import sys
 import time
 import traceback
@@ -44,6 +46,9 @@ class Session:
     """What the app has loaded and computed so far."""
 
     def __init__(self):
+        # The reference frame (direct beam at alpha_i = 0) outlives reset():
+        # it serves every measurement of the series.
+        self.ref = None          # spot.find_reference_beam() + "name"
         self.reset()
 
     def reset(self):
@@ -53,6 +58,7 @@ class Session:
         self.geom = None         # from the .pro file
         self.geom_used = None    # what the conversion used (alpha_i may be fixed)
         self.offset = None       # the direct-beam offset (spot.find_offset)
+        self.calibration = None  # with a reference frame: origin and alpha_i
         self.dat_name = None
         self.raw = None          # x, y, intensity[, variance]; full detector
         self.cut = None          # converted, rows below the horizon dropped
@@ -192,7 +198,7 @@ def cmd_load_dat(path, name):
     _require("pro")
     S.dat_name = name
     S.raw = S.cut = S.data = None
-    S.geom_used = S.offset = None
+    S.geom_used = S.offset = S.calibration = None
     S.mask_kind, S.mask_text = "none", ""
     t0 = time.time()
     try:
@@ -236,21 +242,91 @@ def _find_offset():
                          f"offset cannot be corrected: {err}") from None
 
 
-def cmd_convert(correct_offset=True):
-    """Steps 5-8.  With correct_offset, every pixel is first moved by the
-    direct-beam offset (x0, y0) found automatically (spot.find_offset), so the
-    direct beam is at the origin and the specular spot at phi_f = 0,
-    alpha_f = alpha_i.  If the specular spot cannot be found, the frame is
-    converted as it is and offset_error says why."""
+def cmd_load_ref(path, name):
+    """Read the reference frame (direct beam at alpha_i = 0, beamstop out) and
+    measure the beam: its position is the origin for every measurement."""
+    try:
+        df = gisaxs.read_dat(path, progress=progress)
+    except UnicodeDecodeError:
+        raise InputError(f"“{name}” is not a text file. Expected a BornAgain "
+                         f".dat 2D dataset.") from None
+    progress("Measuring the direct beam…")
+    try:
+        beam = spot.find_reference_beam(df)
+    except spot.SpotError as err:
+        raise InputError(f"could not measure the direct beam in “{name}”: {err}") from None
+    S.ref = dict(beam, name=name)
+    _drop_conversion()
+    return _pack(dict(S.ref, version=S.version))
+
+
+def cmd_clear_ref():
+    S.ref = None
+    _drop_conversion()
+    return _pack({"version": S.version})
+
+
+def _drop_conversion():
+    """A new reference changes the conversion: forget the converted frame."""
+    if S.cut is not None:
+        S.cut = S.data = S.geom_used = S.offset = None
+        S.mask_kind, S.mask_text = "none", ""
+        S.version += 1
+
+
+def _calibrate():
+    """With a reference frame: shift the frame so the direct beam is at the
+    origin, find the specular spot, and take alpha_i from where it sits.
+    Returns (shifted frame, geometry, report, warning or None)."""
+    ref = S.ref
+    base = gisaxs.shift_detector(S.raw, ref["x0"], ref["y0"])
+    report = {"name": ref["name"], "x0": ref["x0"], "y0": ref["y0"],
+              "half_cut": ref["half_cut"], "alpha_i_pro": S.geom.alpha_i}
+    progress("Finding the specular spot…")
+    try:
+        # brightest row along x ~ 0, above half the nominal horizon height:
+        # clear of the direct beam, below any plausible spot
+        found = spot.find_on_detector(base, S.geom.L, S.geom.alpha_i, scan_column=True,
+                                      above=0.5 * gisaxs.horizon_y(S.geom))
+    except spot.SpotError as err:
+        warning = (f"Could not find the specular spot, so alpha_i is the .pro value "
+                   f"({S.geom.alpha_i:.4f} deg): {err}")
+        report.update(alpha_i=S.geom.alpha_i, spot=None)
+        return base, S.geom, report, warning
+    alpha_i = gisaxs.alpha_i_from_specular(found["x0"], found["y0"], S.geom.L)
+    geom = dataclasses.replace(S.geom, alpha_i=alpha_i)
+    phi, alpha = gisaxs.exit_angles(found["x0"], found["y0"], geom)
+    report.update(alpha_i=alpha_i, delta=alpha_i - S.geom.alpha_i,
+                  spot={"x": found["x0"], "y": found["y0"],
+                        "fwhm_x": found["fwhm_x"], "fwhm_y": found["fwhm_y"],
+                        "phi_f": float(phi), "alpha_f": float(alpha)})
+    return base, geom, report, None
+
+
+def cmd_convert(correct_offset=True, use_reference=True):
+    """Steps 5-8.
+
+    With a reference frame loaded (cmd_load_ref) and use_reference: every pixel
+    is moved so the direct beam measured there is at the origin, and alpha_i
+    is taken from the specular spot (gisaxs.alpha_i_from_specular), not from
+    the .pro file.  Otherwise, with correct_offset, every pixel is moved by the
+    offset spot.find_offset finds from the spot alone, keeping the .pro
+    alpha_i.  Otherwise the frame is converted as it is.  If the specular spot
+    cannot be found, offset_error says so and why."""
     _require("raw")
     geom, offset, x0, y0, offset_error = S.geom, None, 0.0, 0.0, None
-    if correct_offset:
+    reference = None
+    if use_reference and S.ref is not None:
+        base, geom, reference, offset_error = _calibrate()
+        x0, y0 = S.ref["x0"], S.ref["y0"]
+    elif correct_offset:
         try:
             offset = _find_offset()
             x0, y0 = offset["x0"], offset["y0"]
         except InputError as err:
             offset_error = str(err)
-    base = gisaxs.shift_detector(S.raw, x0, y0) if (x0 or y0) else S.raw
+    if reference is None:
+        base = gisaxs.shift_detector(S.raw, x0, y0) if (x0 or y0) else S.raw
     n = len(base)
     df = base.copy()
     steps = {}
@@ -291,12 +367,12 @@ def cmd_convert(correct_offset=True):
     }
     S.cut = cut
     S.data = cut
-    S.geom_used, S.offset = geom, offset
+    S.geom_used, S.offset, S.calibration = geom, offset, reference
     S.mask_kind, S.mask_text = "none", ""
     S.version += 1
     return _pack({"steps": steps, "version": S.version,
                   "alpha_i": geom.alpha_i, "x0": x0, "y0": y0, "offset": offset,
-                  "offset_error": offset_error})
+                  "reference": reference, "offset_error": offset_error})
 
 
 def cmd_table_head(which="converted", q_unit="nm-1"):
@@ -310,7 +386,21 @@ def _export_meta(df, mask_text=""):
     s = S.summary
     shift = ""
     o = S.offset
-    if o:
+    cal = S.calibration
+    alpha = ""
+    if cal:
+        edge = ("the lower edge of the half-cut beam, i.e. the sample surface"
+                if cal["half_cut"] else "its centroid")
+        shift = (f"x_mm = x - {cal['x0']:.4f} mm and y_mm = y - {cal['y0']:.4f} mm, with "
+                 f"x, y as in the .dat file: the direct beam measured in the reference "
+                 f"frame {cal['name']} ({edge})")
+        if cal.get("spot"):
+            sp = cal["spot"]
+            alpha = (f"alpha_i = {cal['alpha_i']:.6f} deg from the specular spot at "
+                     f"x = {sp['x']:.4f} mm, y = {sp['y']:.4f} mm measured from the "
+                     f"direct beam, alpha_i = atan(sqrt(x^2 + y^2) / L) / 2; the .pro "
+                     f"value {cal['alpha_i_pro']:.6f} deg is not used")
+    elif o:
         beam = "the direct beam seen in the frame"
         if o["method_x"] == o["method_y"] == "direct":
             how = f"x0 and y0 from {beam}"
@@ -326,7 +416,7 @@ def _export_meta(df, mask_text=""):
                  f"y = {o['spot']['y']:.4f} mm in the file, is then at "
                  f"phi_f = {o['phi_f_spot']:.6f} deg, alpha_f = {o['alpha_f_spot']:.6f} deg")
     return {
-        "shift_text": shift,
+        "shift_text": shift, "alpha_text": alpha,
         "dat_name": S.dat_name, "pro_name": S.pro_name,
         "L": s["L"], "alpha_i": S.geom_used.alpha_i,
         "wavelength": s["wavelength"],
@@ -398,9 +488,12 @@ def cmd_apply_mask(kind="none", n_sigma=None, half_width=None, window=None,
         window = float(window if window is not None else spot.DEFAULT_WINDOW)
         progress("Measuring the specular spot…")
         try:
+            # The search starts at the brightest row along phi_f ~ 0, so a
+            # spot well away from alpha_f = alpha_i is still the one masked.
             masked, info = spot.find_and_mask(cut, S.geom_used.alpha_i,
                                               n_sigma=n_sigma, window=window,
-                                              follow_peak=bool(follow_peak))
+                                              follow_peak=bool(follow_peak),
+                                              scan_column=True)
         except spot.SpotError as err:
             raise InputError(f"could not measure the specular spot: {err}") from None
         report.update(info)
@@ -492,11 +585,12 @@ def cmd_profile_data(kind, q_unit="nm-1", smooth=gisaxs.DEFAULT_SMOOTHING):
 def cmd_export_figure(kind, fmt="png", log=True, cmap="viridis", vmin=None,
                       vmax=None, zero_colour="white", preset="publication",
                       columns=1, q_unit="nm-1", profile=False,
-                      smooth=gisaxs.DEFAULT_SMOOTHING, xlim=None, ylim=None):
+                      smooth=gisaxs.DEFAULT_SMOOTHING, xlim=None, ylim=None,
+                      marks=None):
     try:
         data, t0 = _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour,
                                 preset, columns, q_unit, profile, smooth,
-                                xlim, ylim)
+                                xlim, ylim, marks)
     except figures.FigureError as err:
         raise InputError(str(err)) from None
     mime = "application/pdf" if fmt == "pdf" else "image/png"
@@ -504,8 +598,31 @@ def cmd_export_figure(kind, fmt="png", log=True, cmap="viridis", vmin=None,
                  arrays={"file": np.frombuffer(data, dtype=np.uint8)})
 
 
+_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+
+
+def _marks(kind, marks, q_unit):
+    """The profile labels sent by the page, [{"x", "text", "style"}], checked;
+    text is the number as typed, shown as it is on the label."""
+    out = []
+    for i, m in enumerate(marks or []):
+        try:
+            x = float(m["x"])
+            style = int(m.get("style", i))
+        except (KeyError, TypeError, ValueError):
+            raise InputError("every label needs a number") from None
+        if not np.isfinite(x):
+            raise InputError("every label needs a finite number")
+        text = str(m.get("text", "")).strip()
+        if not _NUMBER.fullmatch(text):
+            text = f"{x:g}"
+        out.append({"x": x, "style": style,
+                    "label": figures.mark_label(kind, text, q_unit)})
+    return out
+
+
 def _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour, preset, columns,
-                 q_unit, profile, smooth, xlim, ylim):
+                 q_unit, profile, smooth, xlim, ylim, marks=None):
     t0 = time.time()
     if profile:
         progress(f"Drawing the {fmt.upper()} figure…")
@@ -513,7 +630,7 @@ def _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour, preset, columns,
         data = figures.profile(x, raw, figures.axis_label(kind, q_unit),
                                smoothed=smoothed if int(smooth) > 1 else None,
                                log=log, preset=preset, columns=int(columns),
-                               fmt=fmt, xlim=xlim)
+                               fmt=fmt, xlim=xlim, marks=_marks(kind, marks, q_unit))
     else:
         df, X, Y, counts = _map_arrays(kind, q_unit)
         progress(f"Drawing {len(counts):,} pixels into the {fmt.upper()} "
@@ -532,6 +649,8 @@ COMMANDS = {
     "init": cmd_init,
     "load_pro": cmd_load_pro,
     "load_dat": cmd_load_dat,
+    "load_ref": cmd_load_ref,
+    "clear_ref": cmd_clear_ref,
     "convert": cmd_convert,
     "table_head": cmd_table_head,
     "export_table": cmd_export_table,

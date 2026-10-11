@@ -5,7 +5,10 @@ alpha_f = alpha_i.  It is found and measured like this:
 
     1. Take a window of +/- W pixel widths around the predicted position (or,
        with follow_peak, around the local maximum the window climbs to from
-       there, for a spot that is not where alpha_i predicts it).
+       there, for a spot that is not where alpha_i predicts it).  With
+       scan_column the climb starts instead at the brightest row along
+       phi_f ~ 0, over the whole frame, so a weaker feature nearer the
+       prediction is not taken for the spot.
     2. Average the window over its rows -> P(phi_f), and over its columns
        -> Q(alpha_f).
     3. For each profile: background B = median of the outer 20 % of the
@@ -45,6 +48,11 @@ MAX_FOLLOW_STEPS = 50
 # find_offset() accepts the direct beam as the origin if, measured from it,
 # the specular spot sits at alpha_f = alpha_i within this many pixels.
 OFFSET_TOLERANCE = 1.0
+
+# find_reference_beam(): a beam whose lower flank (peak to half maximum) is
+# shorter than this fraction of its upper flank is cut from below, by the
+# sample half-cutting the beam; its lower edge then marks the sample surface.
+HALF_CUT_RATIO = 0.5
 
 
 class SpotError(ValueError):
@@ -130,13 +138,18 @@ def measure_peak(coord, profile, centre, half_width, pixel, unit="deg"):
     }
 
 
-def _locate(df, columns, predicted, window, follow_peak, unit, names):
+def _locate(df, columns, predicted, window, follow_peak, unit, names,
+            scan_column=False, scan_above=None):
     """Find and measure a peak in the frame, in the coordinates `columns`.
 
-    columns   : (horizontal, vertical) column names, e.g. ("phi_f", "alpha_f")
-                or ("x", "y")
-    predicted : where the peak should be, in those coordinates
-    names     : what to call the two coordinates in messages
+    columns     : (horizontal, vertical) column names, e.g. ("phi_f", "alpha_f")
+                  or ("x", "y")
+    predicted   : where the peak should be, in those coordinates
+    names       : what to call the two coordinates in messages
+    scan_column : start at the brightest row of the band of columns around the
+                  predicted horizontal position (the window's width), over the
+                  whole frame, instead of at the predicted vertical position
+    scan_above  : with scan_column, only rows above this vertical coordinate
     Returns centres, widths and the window, keyed h* (horizontal) and v*
     (vertical).
     """
@@ -159,6 +172,9 @@ def _locate(df, columns, predicted, window, follow_peak, unit, names):
                 f"{v_c:.4f} {unit} lies (mostly) outside the frame")
         return rows, cols
 
+    if scan_column:
+        h_c, v_c = _brightest_row(image, h_col, v_row, h_c, half_h, names, unit,
+                                  v_min=scan_above)
     rows, cols = select(h_c, v_c)
     steps = 0
     if follow_peak:
@@ -203,7 +219,37 @@ def _locate(df, columns, predicted, window, follow_peak, unit, names):
         "half_width_h": half_h, "half_width_v": half_v,
         "pixel_h": pix_h, "pixel_v": pix_v,
         "follow_steps": steps,
+        "scan_column": bool(scan_column),
     }
+
+
+def _brightest_row(image, h_col, v_row, h_c, half_h, names, unit, v_min=None):
+    """The brightest row in the band of columns |h - h_c| <= half_h, over the
+    whole frame (or the rows above v_min), and the brightest column in that
+    row: where to start.
+
+    Each row is scored by its mean over the band, smoothed over 3 rows, so a
+    single hot pixel does not win over a spot several pixels across.
+    """
+    band = np.flatnonzero(np.abs(h_col - h_c) <= half_h)
+    if len(band) == 0:
+        raise SpotError(f"no detector column lies near {names[0]} = {h_c:+.4f} {unit}")
+    strip = image[:, band]
+    if not np.isfinite(strip).any():
+        raise SpotError(f"the columns around {names[0]} = {h_c:+.4f} {unit} are "
+                        "fully masked")
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        level = np.nanmean(strip, axis=1)
+    level = np.convolve(np.where(np.isfinite(level), level, 0.0),
+                        np.ones(3) / 3.0, mode="same")
+    if v_min is not None:
+        level = np.where(v_row > v_min, level, -np.inf)
+        if not np.isfinite(level).any():
+            raise SpotError(f"no detector row lies above {names[1]} = {v_min:.4f} {unit}")
+    r = int(np.argmax(level))
+    c = int(np.nanargmax(strip[r])) if np.isfinite(strip[r]).any() else len(band) // 2
+    return float(h_col[band[c]]), float(v_row[r])
 
 
 def _hint(image, h_col, v_row, predicted, reach_h, reach_v, pix_h, pix_v,
@@ -228,7 +274,8 @@ def _hint(image, h_col, v_row, predicted, reach_h, reach_v, pix_h, pix_v,
                    f"window W larger than {np.ceil(away * 1.3):.0f} pixels.")
 
 
-def find_spot(df, alpha_i, window=DEFAULT_WINDOW, follow_peak=False):
+def find_spot(df, alpha_i, window=DEFAULT_WINDOW, follow_peak=False,
+              scan_column=False):
     """Locate and measure the specular spot in an angular frame.
 
     df          : frame with phi_f, alpha_f, intensity and df.attrs["nx"]
@@ -238,12 +285,17 @@ def find_spot(df, alpha_i, window=DEFAULT_WINDOW, follow_peak=False):
     follow_peak : re-centre the window on its brightest pixel, and repeat
                   until the window is centred on the brightest pixel in it.
                   Off by default: the window stays on the prediction.
+    scan_column : start at the brightest row along phi_f ~ 0 (the columns
+                  within W pixels of phi_f = 0), over every alpha_f in the
+                  frame, instead of at alpha_f = alpha_i.  For a spot that is
+                  well away from where alpha_i puts it, with weaker features
+                  nearer the prediction.  Off by default.
 
     Returns a dict with phi0, alpha0, sigma_phi, sigma_alpha, the two
     profile measurements and the window that was used.
     """
     got = _locate(df, ("phi_f", "alpha_f"), (0.0, alpha_i), window, follow_peak,
-                  "deg", ("phi_f", "alpha_f"))
+                  "deg", ("phi_f", "alpha_f"), scan_column=scan_column)
     horiz, vert = got["h_profile"], got["v_profile"]
     return {
         "phi0": got["h0"], "alpha0": got["v0"],
@@ -257,10 +309,12 @@ def find_spot(df, alpha_i, window=DEFAULT_WINDOW, follow_peak=False):
         "half_width_alpha": got["half_width_v"],
         "pixel_phi": got["pixel_h"], "pixel_alpha": got["pixel_v"],
         "follow_steps": got["follow_steps"],
+        "scan_column": got["scan_column"],
     }
 
 
-def find_on_detector(df, L, alpha_i, window=DEFAULT_WINDOW, follow_peak=True):
+def find_on_detector(df, L, alpha_i, window=DEFAULT_WINDOW, follow_peak=True,
+                     scan_column=False, above=None):
     """Locate the specular spot on the raw detector, in x, y [mm].
 
     df          : the detector frame (x, y, intensity), before any conversion
@@ -270,13 +324,16 @@ def find_on_detector(df, L, alpha_i, window=DEFAULT_WINDOW, follow_peak=True):
     window      : half-width W of the window, in pixels
     follow_peak : on by default here: the point is to find a spot that is
                   not where the nominal alpha_i puts it
+    scan_column : start instead at the brightest row along x ~ 0
+    above       : with scan_column, only rows with y above this [mm], to keep
+                  clear of the direct beam and the beamstop
 
     Returns x0, y0 (the centroids above half maximum), the FWHMs and the
     window that was used.
     """
     predicted = (0.0, L * np.tan(np.radians(2.0 * alpha_i)))
     got = _locate(df, ("x", "y"), predicted, window, follow_peak, "mm",
-                  ("x", "y"))
+                  ("x", "y"), scan_column=scan_column, scan_above=above)
     horiz, vert = got["h_profile"], got["v_profile"]
     return {
         "x0": got["h0"], "y0": got["v0"],
@@ -287,6 +344,47 @@ def find_on_detector(df, L, alpha_i, window=DEFAULT_WINDOW, follow_peak=True):
         "window_pixels": window,
         "pixel_x": got["pixel_h"], "pixel_y": got["pixel_v"],
         "follow_steps": got["follow_steps"],
+    }
+
+
+def find_reference_beam(df, window=DEFAULT_WINDOW):
+    """Locate the direct beam in a reference frame taken at alpha_i = 0 with
+    the beamstop out of the way, where it is the one spot on the detector.
+
+    The search starts at the brightest 3 x 3 patch of the frame (so a single
+    hot pixel does not win), then measures the beam like the specular spot.
+    x0 is the centroid.  y0 is the centroid too, unless the beam is cut from
+    below: after a y-scan the sample half-cuts the beam, only its upper part
+    shows, and the lower edge marks the height of the sample surface, which
+    is the origin the conversion needs; y0 is then the half-maximum point of
+    that edge.  The beam counts as cut when its lower flank (peak to half
+    maximum) is shorter than HALF_CUT_RATIO times its upper flank.
+    """
+    image = as_image(df, "intensity")
+    if not np.isfinite(image).any():
+        raise SpotError("the reference frame has no counts")
+    filled = np.where(np.isfinite(image), image, 0.0)
+    padded = np.pad(filled, 1)
+    patch = np.zeros_like(filled)
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            patch += padded[dy:dy + filled.shape[0], dx:dx + filled.shape[1]]
+    r, c = np.unravel_index(int(np.argmax(patch)), patch.shape)
+    x_col = as_image(df, "x").mean(axis=0)
+    y_row = as_image(df, "y").mean(axis=1)
+    got = _locate(df, ("x", "y"), (x_col[c], y_row[r]), window, True, "mm", ("x", "y"))
+    vert = got["v_profile"]
+    lower = vert["peak"] - vert["left"]
+    upper = vert["right"] - vert["peak"]
+    half_cut = bool(lower < HALF_CUT_RATIO * upper)
+    return {
+        "x0": got["h0"], "y0": vert["left"] if half_cut else got["v0"],
+        "half_cut": half_cut,
+        "y_centroid": got["v0"], "y_lower_edge": vert["left"],
+        "lower_flank": float(lower), "upper_flank": float(upper),
+        "fwhm_x": got["h_profile"]["fwhm"], "fwhm_y": vert["fwhm"],
+        "peak_counts": float(np.nanmax(image)),
+        "pixel_x": got["pixel_h"], "pixel_y": got["pixel_v"],
     }
 
 
@@ -400,9 +498,10 @@ def mask_spot(df, phi0, alpha0, half_phi, half_alpha):
 
 
 def find_and_mask(df, alpha_i, n_sigma=DEFAULT_N_SIGMA, window=DEFAULT_WINDOW,
-                  follow_peak=False):
+                  follow_peak=False, scan_column=False):
     """find_spot() then mask_spot() with half-axes n_sigma * sigma."""
-    spot = find_spot(df, alpha_i, window=window, follow_peak=follow_peak)
+    spot = find_spot(df, alpha_i, window=window, follow_peak=follow_peak,
+                     scan_column=scan_column)
     half_phi = n_sigma * spot["sigma_phi"]
     half_alpha = n_sigma * spot["sigma_alpha"]
     masked, n = mask_spot(df, spot["phi0"], spot["alpha0"], half_phi, half_alpha)

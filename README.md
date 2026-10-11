@@ -25,8 +25,8 @@ that unlock in order:
    incidence angle and the sample–detector distance $L = |\mathbf N|$.
 3. **Raw data**: pixel count, $x$ and $y$ ranges, and the first few rows.
 4. **Raw intensity map** (optional): y vs x over the full detector.
-5. **Exit angles** $(x, y) \to (\varphi_f, \alpha_f)$. The direct-beam offset
-   is found from the data and corrected first (see below).
+5. **Exit angles** $(x, y) \to (\varphi_f, \alpha_f)$, from the detector
+   $x, y$ as they are in the `.dat` file.
 6. **Final wavevector** $k_{fx}, k_{fy}, k_{fz}$.
 7. **Scattering vector** $q_x, q_y, q_z$.
 8. **Horizon cut**: whole detector rows below the sample horizon are dropped, so
@@ -36,7 +36,8 @@ that unlock in order:
 10. **Mask the specular rod?** with `mask.py` (`find_rod`, `mask_rod`), width
     $n_\sigma\sigma$ (default 4) or a fixed half-width in degrees.
 11. **Mask the specular spot?** (only if the rod was not masked) with `spot.py`;
-    the search window always follows the peak.
+    the search starts at the brightest row along $\varphi_f \simeq 0$ and the
+    window follows the peak.
 12. **2D intensity maps**: $q_z$ vs $q_y$, $\alpha_f$ vs $\varphi_f$, $y$ vs
     $x$. Every pixel is one point coloured by its counts; no averaging, no
     regridding.
@@ -164,57 +165,16 @@ file keeps 925 × 1028 = 950,900 pixels.
 - Counts of −1 (dead pixels) become NaN on reading, and so does their variance.
   NaN already in the file is kept as NaN.
 
-## The direct-beam offset (found automatically)
+## The direct-beam offset (switched off)
 
-The formulas assume the direct beam at the detector origin; then the specular
-spot sits at $\varphi_f = 0$, $\alpha_f = \alpha_i$, i.e. at $x = 0$,
-$y = L\tan 2\alpha_i$. On some instruments the direct beam is not at the
-origin but at $(x_0,\ y_0)$, usually above it (in the instrument software it
-shows at a positive $y$) and sometimes to one side. Every $\alpha_f$ and
-$\varphi_f$ is then off, and features such as Yoneda peaks land at different
-$\alpha_f$ in frames measured at different $\alpha_i$.
-
-When converting (step 5), the app finds $(x_0,\ y_0)$ from the data and moves
-every pixel, $x \to x - x_0$ and $y \to y - y_0$, keeping the `.pro`
-$\alpha_i$. Nothing has to be chosen or entered. The offset is estimated two
-ways, and both are checked on the backend (`spot.find_offset`), for each axis
-on its own:
-
-1. **The direct beam itself**, if it shows in the frame: its centroid gives
-   $(x_0,\ y_0)$. An axis takes it if, measured from it, the specular spot
-   sits at its target on that axis within one pixel: $\varphi_f = 0$ for $x$,
-   $\alpha_f = \alpha_i$ for $y$.
-2. **The specular spot** at $(x_s,\ y_s)$: $x_0 = x_s$ and
-   $y_0 = y_s - L\tan 2\alpha_i$, which put the spot at $\varphi_f = 0$,
-   $\alpha_f = \alpha_i$ by construction.
-
-The direct beam is used where it passes the check, being the measured origin.
-Otherwise the spot is used: the direct beam was not found, part of it is
-behind the beamstop (which pulls its centroid away), or the spot sits to one
-side of it. Both spots are located on the raw detector the same way as the
-spot mask (window, climbing to the local maximum, centroid above half
-maximum). The direct beam is searched for where the spot says it should be.
-
-On the test frame the direct beam shows at $(-0.05,\ 3.76)$ mm, behind the
-beamstop's edge; measured from it the spot misses by about 3 pixels on both
-axes, so the spot sets both: $x_0 = 0.180$ mm, $y_0 = 3.519$ mm.
-
-If the specular spot cannot be found, the frame is converted as it is and
-step 5 says so. After the shift, $x$ and $y$ in the maps and the exported
-table are measured from the direct beam. The raw map of step 4 keeps the
-file's $x$ and $y$, and the table's header records $x_0$, $y_0$ and how they
-were found. $\alpha_i$ is never changed, so $q_z$ moves down with the pixels.
-
-For the test file the specular spot is at $(x_s, y_s) = (0.180, 20.274)$ mm
-instead of $y = 16.755$ mm ($\alpha_f = 0.4260°$ with $\alpha_i = 0.3000°$):
-
-| check | y₀ | spot then at α_f | used |
-|---|---|---|---|
-| 1. direct beam, seen at (−0.05, 3.758) mm | 3.758 mm | 0.2914° (3.2 pixels off) | no: its lower edge is behind the beamstop |
-| 2. specular spot | 3.519 mm | 0.2999° | yes |
-
-With the shift the horizon cut keeps 878 rows, and the spot mask (step 11)
-finds the spot with its default window.
+The formulas take the detector origin in the `.dat` file to be the direct beam,
+and $\alpha_i$ comes from the `.pro` file. No offset correction is applied: the
+page converts with `convert(correct_offset=False)` and the pixels keep the
+file's $x, y$. The backend still has two corrections, unused by the page: from
+the specular spot alone (`spot.find_offset`, keeping the `.pro` $\alpha_i$),
+and from a frame at $\alpha_i = 0$ that measures the direct beam
+(`bridge.cmd_load_ref`, `spot.find_reference_beam`; $\alpha_i$ is then taken
+from the spot).
 
 ## Masks
 
@@ -224,9 +184,14 @@ $\varphi_f$, the tallest peak is measured (centre of mass of its top half, FWHM
 variance NaN. The report repeats mask.py's check: the tallest column left
 standing against the diffuse level just outside the mask.
 
-**Specular spot** (`py/spot.py`): a window of ±W pixel widths (default 15) around
-the predicted position $\varphi_f = 0,\ \alpha_f = \alpha_i$; the window is
-averaged over its rows, $P(\varphi_f)$, and its columns, $Q(\alpha_f)$. For each
+**Specular spot** (`py/spot.py`): the search starts on the specular rod, at the
+brightest row of the columns within W pixels of $\varphi_f = 0$ over every
+$\alpha_f$ in the frame (rows scored by their mean over those columns, smoothed
+over 3 rows, so a hot pixel does not win), not at $\alpha_f = \alpha_i$: the spot
+is often tens of pixels away from where $\alpha_i$ puts it, and climbing from
+there could stop on a weaker feature nearer the prediction. A window of ±W pixel
+widths (default 15) then climbs onto the brightest pixel and is averaged over
+its rows, $P(\varphi_f)$, and its columns, $Q(\alpha_f)$. For each
 profile: background B = median of the outer 20 % of the window, height
 H = max − B, FWHM from the two half-maximum crossings found by linear
 interpolation, σ = FWHM / (2√(2 ln 2)), centre = centroid of (P − B) over the
@@ -239,13 +204,12 @@ $$
 
 is masked (n default 4). A FWHM narrower than one pixel is replaced by one pixel.
 
-> **Note on the test file.** In `frame-000.dat` the specular spot is at
-> $\alpha_f \approx 0.426°$ (y ≈ 20.3 mm), not at $\alpha_i = 0.300°$
-> (y = 16.8 mm): 47 pixels away, outside the default ±15-pixel window. With the
-> defaults the spot measurement therefore stops with a message that names the
-> brightest pixel nearby. Tick **Follow the peak** to let the window climb to the
-> local maximum and centre on it, or enlarge W. The window centre and how far it
-> moved are shown in the report.
+> **Note on the test files.** In `frame-000.dat` the specular spot is at
+> $\alpha_f \approx 0.426°$, 47 pixels above $\alpha_i = 0.300°$; in the
+> `various-csv-v2` series it is about 0.14° (50 pixels) above $\alpha_i$, with a
+> weak bump near $\alpha_i$; in the `various-angles-BCVS-v2` series about 0.045°
+> below it. Starting at the brightest row along $\varphi_f \simeq 0$ finds the
+> spot in all eleven frames.
 
 ## Plots and exports
 
@@ -261,6 +225,15 @@ is masked (n default 4). A FWHM narrower than one pixel is replaced by one pixel
   them. Zooming with the mouse fills the boxes in, so a download shows what
   the screen shows; **Full range** empties them. Limits on q axes are converted
   when the q unit is switched.
+- **Labels on the 1D profiles.** "Add label $\alpha_f$ = [value]" (or
+  $\varphi_f$, $q_y$, $q_z$) draws a vertical line at that value with
+  "$\alpha_f = 0.280^\circ$" written at the top, in the line's colour; add as
+  many as needed and remove one with its ×. They cycle through red dotted, blue
+  dashed, green dash-dot, purple long-dashed, … The number is shown as typed
+  (0.280 stays 0.280). Each text sits on the side of its line with more room,
+  so neighbouring labels part, and the top of the plot is kept free for them.
+  The PNG/PDF export draws the same lines and labels; labels on q axes are
+  converted when the q unit is switched.
 - **Profile smoothing.** Each 1D profile is smoothed with a centred running
   mean, `profile.rolling(7, center=True, min_periods=1).mean()` by default.
   The number of points is typed per plot: any odd whole number (1 = no
@@ -279,10 +252,14 @@ is masked (n default 4). A FWHM narrower than one pixel is replaced by one pixel
   shows the real count. The profiles have Origin-style crosshair spike lines.
 - **Files** are drawn by matplotlib with `plotstyle.use_publication_style(engine="stix")`
   (STIXGeneral, since LaTeX and Times New Roman are not available in the
-  browser). *Publication*: plotstyle defaults, 1 or 2 journal columns.
-  *Presentation / projector*: `font_size=16`, `linewidth=1.5`, 2 pt lines,
-  8 × 6 in. In 2D maps the scatter layer is rasterised (600 dpi); axes, labels
-  and colour bar stay vector.
+  browser). Every file has the proportions of an A4 sheet in landscape
+  (width : height = 297 : 210 = √2): the whole page is saved, not cropped to
+  its contents, and a constrained layout fits the labels inside it; an
+  equal-aspect map that is narrower than the page is centred on it.
+  *Publication*: plotstyle defaults, 1 or 2 journal columns wide (3.375 in or
+  6.9 in), height = width / √2. *Presentation / projector*: `font_size=16`,
+  `linewidth=1.5`, 2 pt lines, 8 × 5.66 in. In 2D maps the scatter layer is
+  rasterised (600 dpi); axes, labels and colour bar stay vector.
 - **File names** use the `.dat` stem and the plot, e.g.
   `frame-000_qz-vs-qy.pdf`, `frame-000_profile-vs-alphaf.png`,
   `frame-000_converted.csv.gz`.

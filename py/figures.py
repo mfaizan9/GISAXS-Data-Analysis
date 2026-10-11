@@ -37,7 +37,11 @@ COLORMAPS = ["viridis", "cividis", "inferno", "magma", "turbo"]
 # sit on a white background.
 ZERO_COLOURS = {"white": "white", "black": "black"}
 PRESETS = ("publication", "presentation")
-PRESENTATION_SIZE = (8.0, 6.0)
+# Every downloaded figure has the proportions of an A4 sheet in landscape,
+# 297 x 210 mm: height = width / sqrt(2).  The width is the journal column
+# (publication) or 8 in (presentation).
+A4_RATIO = 210.0 / 297.0
+PRESENTATION_SIZE = (8.0, 8.0 * A4_RATIO)
 
 
 class FigureError(ValueError):
@@ -51,6 +55,24 @@ MARKER_OVERLAP = 1.25
 # with line widths relative to the preset's lines.linewidth.
 PROFILE_MEASURED = {"color": "0.78", "width": 0.75}
 PROFILE_SMOOTHED = {"color": "0.15", "width": 1.5}
+
+# Labelled vertical lines on the 1D profiles ("Add label"): colour and line
+# style in the order the labels are added, the same on screen (Plotly dash
+# names; js/app.js gets them from screen_colours()).
+MARK_STYLES = [
+    {"color": "#b2182b", "dash": "dot"},
+    {"color": "#4682b4", "dash": "dash"},
+    {"color": "#1b7837", "dash": "dashdot"},
+    {"color": "#7b3294", "dash": "longdash"},
+    {"color": "#d95f02", "dash": "dot"},
+    {"color": "#404040", "dash": "dash"},
+]
+MPL_DASH = {"dot": (0, (1, 1.5)), "dash": (0, (4, 2)),
+            "dashdot": (0, (4, 1.5, 1, 1.5)), "longdash": (0, (8, 2.5))}
+# With labels, the top of the plot is kept free for them: the data use the
+# bottom (1 - MARK_HEADROOM) of the y-axis (in log units on a log axis).
+MARK_HEADROOM = 0.14
+MINUS = "−"
 
 
 def q_unit_tex(q_unit):
@@ -75,6 +97,56 @@ def axis_label(name, q_unit="nm-1"):
     return labels[name]
 
 
+def mark_label(name, text, q_unit="nm-1"):
+    """The text of a profile label, e.g. "$\alpha_f$ = 0.280°".
+
+    text is the number as typed; it is kept as it is, so the label shows the
+    digits that were entered.  Numbers stay outside $...$ (plotstyle gotcha).
+    """
+    symbol = {"x": r"$x$", "y": r"$y$", "phi_f": r"$\varphi_f$",
+              "alpha_f": r"$\alpha_f$", "qy": r"$q_y$", "qz": r"$q_z$"}[name]
+    unit = {"phi_f": "°", "alpha_f": "°", "x": " mm", "y": " mm"}.get(
+        name, " " + q_unit_tex(q_unit))
+    return f"{symbol} = {text.replace('-', MINUS)}{unit}"
+
+
+def mark_sides(xs, lo, hi):
+    """For each label line at xs, which side its text goes: towards the wider
+    gap to the next line or to the axis edge, so neighbouring labels part.
+    js/app.js (markSides) does the same for the screen."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    sides = [None] * len(xs)
+    for k, i in enumerate(order):
+        left = xs[i] - (xs[order[k - 1]] if k > 0 else lo)
+        right = (xs[order[k + 1]] if k + 1 < len(order) else hi) - xs[i]
+        sides[i] = "right" if right >= left else "left"
+    return sides
+
+
+def _draw_marks(ax, marks, lo, hi, log, width):
+    """Vertical lines with their labels at the top, and head room for them."""
+    shown = [m for m in marks if lo <= m["x"] <= hi]
+    if not shown:
+        return
+    sides = mark_sides([m["x"] for m in shown], lo, hi)
+    for m, side in zip(shown, sides):
+        style = MARK_STYLES[int(m["style"]) % len(MARK_STYLES)]
+        ax.axvline(m["x"], color=style["color"], linestyle=MPL_DASH[style["dash"]],
+                   linewidth=1.3 * width, zorder=3)
+        pad = 3.0
+        ax.annotate(m["label"], xy=(m["x"], 1.0), xycoords=("data", "axes fraction"),
+                    xytext=(pad if side == "right" else -pad, -pad),
+                    textcoords="offset points", ha="left" if side == "right" else "right",
+                    va="top", color=style["color"],
+                    fontsize=mpl.rcParams["axes.labelsize"], zorder=4)
+    y0, y1 = ax.get_ylim()
+    if log:
+        a, b = np.log10(y0), np.log10(y1)
+        ax.set_ylim(y0, 10.0 ** (a + (b - a) / (1.0 - MARK_HEADROOM)))
+    else:
+        ax.set_ylim(y0, y0 + (y1 - y0) / (1.0 - MARK_HEADROOM))
+
+
 def apply_style(preset="publication"):
     """Set rcParams for a preset (call inside mpl.rc_context())."""
     if preset == "publication":
@@ -94,12 +166,31 @@ def apply_style(preset="publication"):
         })
     else:
         raise ValueError(f"preset must be one of {PRESETS}")
+    # Save the whole figure, not a box cropped to its contents, so the file
+    # keeps the A4 proportions; the constrained layout fits the labels in.
+    mpl.rcParams["savefig.bbox"] = "standard"
 
 
-def figure_size(preset="publication", columns=1, ratio=0.75):
+def figure_size(preset="publication", columns=1):
+    """(width, height) in inches, in A4 proportions."""
     if preset == "presentation":
         return PRESENTATION_SIZE
-    return plotstyle.figure_size(columns=columns, ratio=ratio)
+    return plotstyle.figure_size(columns=columns, ratio=A4_RATIO)
+
+
+def _centre_on_page(fig, ax):
+    """Move the axes and their colour bar so the drawing sits in the middle of
+    the page: an equal-aspect map narrower (or flatter) than the A4 page would
+    otherwise hug the colour bar and leave the spare room on one side."""
+    fig.draw_without_rendering()
+    box = fig.get_tightbbox()                     # everything drawn, in inches
+    w, h = fig.get_figwidth(), fig.get_figheight()
+    dx = ((w - box.x1) - box.x0) / 2.0 / w
+    dy = ((h - box.y1) - box.y0) / 2.0 / h
+    for a in fig.axes:
+        pos = a.get_position(original=True)
+        a.set_position([pos.x0 + dx, pos.y0 + dy, pos.width, pos.height], which="both")
+    ax.apply_aspect()
 
 
 def _to_bytes(fig, fmt):
@@ -181,7 +272,7 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
             raise FigureError("no pixels lie inside the chosen axis limits")
         x, y, c, shown = x[view], y[view], c[view], shown[view]
 
-        fig, ax = plt.subplots(figsize=figure_size(preset, columns, ratio=0.85))
+        fig, ax = plt.subplots(figsize=figure_size(preset, columns), layout="constrained")
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(y_lo, y_hi)
         if equal_aspect:
@@ -196,9 +287,14 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
         fig.colorbar(mappable, ax=ax, extend=extend, label=axis_label("counts"),
                      fraction=0.046, pad=0.03)
 
-        # Size the squares from the final axes box (after the colour bar and
-        # the equal aspect have taken their share of the figure).
+        # Size the squares from the final axes box (after the layout, the
+        # colour bar and the equal aspect have taken their share of the
+        # figure): lay the figure out once and keep that layout.
+        fig.draw_without_rendering()
+        fig.set_layout_engine("none")
         ax.apply_aspect()
+        if equal_aspect:
+            _centre_on_page(fig, ax)
         box = ax.get_position()
         w_pt = box.width * fig.get_figwidth() * 72.0
         h_pt = box.height * fig.get_figheight() * 72.0
@@ -218,13 +314,16 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
 
 
 def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
-            columns=1, fmt="png", ylabel=None, xlim=None):
+            columns=1, fmt="png", ylabel=None, xlim=None, marks=None):
     """Mean counts per pixel against one coordinate; NaN draws as a gap.
 
     smoothed : the smoothed profile; the measured one is then drawn faded
                underneath it.  None draws the measured profile alone.
     xlim     : [lo, hi] x-axis limits (either end None for the data's own).
                Only the points inside are drawn, so the y-axis fits them.
+    marks    : labelled vertical lines, [{"x", "label", "style"}] (label from
+               mark_label(), style an index into MARK_STYLES); those outside
+               the x-axis limits are left out.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -234,7 +333,7 @@ def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
         raise FigureError("fewer than 2 points lie inside the x-axis limits")
     with mpl.rc_context():
         apply_style(preset)
-        fig, ax = plt.subplots(figsize=figure_size(preset, columns, ratio=0.75))
+        fig, ax = plt.subplots(figsize=figure_size(preset, columns), layout="constrained")
         width = mpl.rcParams["lines.linewidth"]
         if smoothed is None:
             ax.plot(x[view], y[view], "-", color=PROFILE_SMOOTHED["color"],
@@ -248,6 +347,8 @@ def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
         if log:
             ax.set_yscale("log")
         ax.set_xlim(lo, hi)
+        if marks:
+            _draw_marks(ax, marks, lo, hi, log, width)
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel or axis_label("mean"))
         return _to_bytes(fig, fmt)
@@ -267,4 +368,5 @@ def screen_colours(n=64):
     bad = to_hex(plotstyle.intensity_cmap("viridis").get_bad())
     profile = {"measured": to_hex(PROFILE_MEASURED["color"]),
                "smoothed": to_hex(PROFILE_SMOOTHED["color"])}
-    return {"scales": scales, "under": under, "bad": bad, "profile": profile}
+    return {"scales": scales, "under": under, "bad": bad, "profile": profile,
+            "marks": [dict(m) for m in MARK_STYLES], "mark_headroom": MARK_HEADROOM}

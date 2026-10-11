@@ -238,24 +238,10 @@
 </section>
 
 <section>
-  <h2>Direct-beam offset</h2>
-  <p>The equations above need the direct beam at the detector origin. On some instruments it sits at \((x_0,\ y_0)\) instead, usually above the origin and sometimes to one side; then the specular spot is not at \(\varphi_f = 0,\ \alpha_f = \alpha_i\). Before converting, the app finds \((x_0,\ y_0)\) from the data and moves every pixel,</p>
-  $$x \;\to\; x - x_0 ,\qquad y \;\to\; y - y_0 ,$$
-  <p>keeping \(\alpha_i\) from the <code>.pro</code> file. Two estimates are made, and each axis is checked on its own:</p>
-  <ol class="tight">
-    <li><b>The direct beam</b>, if it shows in the frame: its centroid gives \((x_0,\ y_0)\). An axis takes it if, measured from it, the specular spot sits at its target on that axis within one pixel: \(\varphi_f = 0\) for \(x\), \(\alpha_f = \alpha_i\) for \(y\).</li>
-    <li><b>The specular spot</b> at \((x_s,\ y_s)\) otherwise:
-      $$x_0 = x_s ,\qquad y_0 = y_s - L\tan 2\alpha_i ,$$
-      which puts the spot at \(\varphi_f = 0,\ \alpha_f = \alpha_i\) exactly. This is used when the direct beam does not show, when part of it is hidden behind the beamstop, which pulls its centroid away, or when the spot sits to one side of it.</li>
-  </ol>
-  <p>Both spots are located on the raw detector: a window around where they are expected, moved onto the brightest pixel, then the centroid of the points above half maximum.</p>
-</section>
-
-<section>
   <h2>Conventions and assumptions</h2>
   <ul class="tight">
     <li>The detector is perpendicular to the incident beam at distance \(L = |\mathbf N|\); only the length of the <code>.pro</code> normal vector \(\mathbf N\) is used.</li>
-    <li>\(x, y\) are measured from the direct beam (after the offset correction above).</li>
+    <li>\(x, y\) are measured from the detector origin given in the <code>.dat</code> file, taken to be the direct beam.</li>
     <li>\(\varphi_f\) increases with \(x\). BornAgain uses the opposite sign for \(\varphi_f\) and \(q_y\); this app does not.</li>
     <li>Angles are shown and exported in degrees, and the trigonometry is done in radians. \(k\) and \(q\) are in \(\mathrm{nm}^{-1}\) (\(\lambda\) is in nm), or in \(\text{Å}^{-1}\) with the toggle in the converter.</li>
   </ul>

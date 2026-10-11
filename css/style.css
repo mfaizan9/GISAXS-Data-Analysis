@@ -237,6 +237,15 @@ input[type="radio"], input[type="checkbox"] { width: 18px; height: 18px; accent-
 .card-options.card-limits { padding-top: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
 .card-limits .lim-x, .card-limits .lim-y { display: inline-block; min-width: 5.5em; }
 .card-options:has(+ .card-limits) { border-bottom: 0; }
+/* 1D profiles: labelled vertical lines ("Add label"), listed as removable chips. */
+.card-options:has(+ .card-marks) { border-bottom: 0; }
+.card-options.card-marks { padding-top: 0; }
+.mark-list { display: inline-flex; flex-wrap: wrap; gap: 6px 8px; }
+.mark-list:empty { display: none; }
+.mark-chip { flex: none; width: max-content; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; padding: 1px 2px 1px 8px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); color: var(--c); }
+.mark-chip svg { display: block; }
+.mark-chip button { min-height: 26px; padding: 0 8px; border: 0; border-radius: 99px; background: transparent; color: var(--ink-3); font-size: 1.1rem; line-height: 1; }
+.mark-chip button:hover:not(:disabled) { color: var(--err); background: var(--err-soft); }
 .limits { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .plot { width: 100%; position: relative; }
 .plot-map { height: 620px; }

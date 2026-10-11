@@ -7,6 +7,7 @@
 import gzip
 import io
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -374,6 +375,48 @@ def test_spot_outside_window_raises_unless_followed():
                                             abs=0.5 * found["pixel_alpha"])
 
 
+def test_spot_search_starts_at_the_brightest_row_along_phi_zero():
+    # The spot sits 60 pixels above the prediction, with a weak bump right at
+    # alpha_i: climbing from the prediction stops on the bump; scanning the
+    # column at phi_f ~ 0 finds the spot.
+    pix = 0.075 / 1600 * 180 / np.pi
+    up = 0.3 + 60 * pix
+    df, geom = gaussian_spot_frame(alpha0=up)
+    phi, alpha = df["phi_f"].to_numpy(), df["alpha_f"].to_numpy()
+    df["intensity"] += 30.0 * np.exp(-0.5 * (phi / 0.006) ** 2 - 0.5 * ((alpha - 0.3) / 0.006) ** 2)
+    climbed = spot.find_spot(df, geom.alpha_i, follow_peak=True)
+    assert climbed["alpha0"] == pytest.approx(0.3, abs=2 * pix)          # the bump
+    found = spot.find_spot(df, geom.alpha_i, follow_peak=True, scan_column=True)
+    assert found["scan_column"]
+    assert found["alpha0"] == pytest.approx(up, abs=0.5 * found["pixel_alpha"])
+    assert found["phi0"] == pytest.approx(0.004, abs=0.5 * found["pixel_phi"])
+    # a single hot pixel on the column does not win over the spot
+    on_column = np.flatnonzero(np.abs(phi) < 0.5 * pix)
+    df.loc[on_column[np.argmin(np.abs(alpha[on_column] - 0.36))], "intensity"] = 5000.0
+    found = spot.find_spot(df, geom.alpha_i, follow_peak=True, scan_column=True)
+    assert found["alpha0"] == pytest.approx(up, abs=0.5 * found["pixel_alpha"])
+
+
+CSV_PRO = TEST_DATA / "various-csv-v2_0001.pro"
+CSV_DAT = TEST_DATA / "various-csv-v2_0001_2D.dat"
+
+
+@pytest.mark.skipif(not (CSV_PRO.exists() and CSV_DAT.exists()), reason="no csv-series frame")
+def test_spot_mask_on_a_frame_whose_spot_is_well_above_alpha_i():
+    # In this series the spot sits ~0.14 deg (about 50 pixels) above
+    # alpha_i = 0.3 deg, with a weak bump near alpha_i that the window used
+    # to land on.
+    pro = read_pro.read_pro(CSV_PRO)
+    geom = Geometry.from_pro(pro)
+    raw = gisaxs.read_dat(CSV_DAT, nx=pro["nx"], ny=pro["ny"])
+    cut = gisaxs.horizon_cut(gisaxs.convert(raw, geom), geom)
+    masked, info = spot.find_and_mask(cut, geom.alpha_i, follow_peak=True, scan_column=True)
+    assert info["alpha0"] == pytest.approx(0.442, abs=0.003)
+    image = mask.as_image(cut, "intensity")
+    brightest = np.nanmax(image[:, np.abs(mask.as_image(cut, "phi_f").mean(axis=0)) < 0.02])
+    assert np.isnan(masked["intensity"].to_numpy()[cut["intensity"].to_numpy() == brightest]).all()
+
+
 def test_measure_peak_interpolates_half_maximum():
     coord = np.arange(-10, 11, dtype=float)
     profile = np.where(np.abs(coord) <= 2, 10.0, 0.0) + 1.0
@@ -498,6 +541,44 @@ def test_offset_from_the_spot_when_no_direct_beam_shows():
     assert got["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
 
 
+def reference_frame(x_d=0.3, y_d=1.2, half_cut=False, sigma=0.25, n=61, pitch=0.075):
+    """A small reference frame (alpha_i = 0, beamstop out): one Gaussian beam
+    at (x_d, y_d), or its upper half only when the sample half-cuts it."""
+    df = make_frame(n, n, pitch, x_d - (n // 2) * pitch + 0.013, y_d - (n // 2) * pitch + 0.021)
+    X, Y = df["x"].to_numpy(), df["y"].to_numpy()
+    counts = 1.0 + 20000.0 * np.exp(-0.5 * (((X - x_d) / sigma) ** 2 + ((Y - y_d) / sigma) ** 2))
+    if half_cut:
+        counts[Y < y_d] = 0.0
+    df["intensity"] = counts
+    return df
+
+
+def test_reference_beam_centre_or_lower_edge():
+    full = spot.find_reference_beam(reference_frame(0.3, 1.2))
+    assert not full["half_cut"]
+    assert full["x0"] == pytest.approx(0.3, abs=0.5 * 0.075)
+    assert full["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
+    # half-cut by the sample: only the upper half shows; its centroid sits
+    # ~0.8 sigma too high, its lower edge marks the surface
+    cut = spot.find_reference_beam(reference_frame(0.3, 1.2, half_cut=True))
+    assert cut["half_cut"]
+    assert cut["y_centroid"] > 1.2 + 0.1
+    assert cut["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
+    assert cut["x0"] == pytest.approx(0.3, abs=0.5 * 0.075)
+    # a hot pixel elsewhere does not win over the beam
+    df = reference_frame(0.3, 1.2)
+    df.loc[0, "intensity"] = 1e5           # brighter than the beam's peak pixel
+    assert spot.find_reference_beam(df)["y0"] == pytest.approx(1.2, abs=0.5 * 0.075)
+
+
+def test_alpha_i_from_specular_inverts_the_spot_height():
+    geom = Geometry(L=1600.0, alpha_i=0.4123, wavelength=0.15418)
+    y = gisaxs.specular_y(geom)
+    assert gisaxs.alpha_i_from_specular(0.0, y, geom.L) == pytest.approx(0.4123, abs=1e-12)
+    # sideways the spot is still 2 alpha_i from the beam
+    assert gisaxs.alpha_i_from_specular(y, 0.0, geom.L) == pytest.approx(0.4123, abs=1e-12)
+
+
 def test_offset_needs_the_specular_spot():
     df, geom = offset_frame()
     df["intensity"] = 2.0                         # nothing to find
@@ -577,6 +658,33 @@ def test_figures_png_and_pdf(preset):
     assert out[:5] == b"%PDF-"
 
 
+def _page_ratio(data):
+    """width / height of a PNG (pixels) or PDF (MediaBox)."""
+    if data[:4] == b"\x89PNG":
+        w, h = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    else:
+        box = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]", data)
+        w, h = float(box.group(1)), float(box.group(2))
+    return w / h
+
+
+@pytest.mark.parametrize("preset,columns", [("publication", 1), ("publication", 2), ("presentation", 1)])
+def test_figures_have_a4_proportions(preset, columns):
+    figures = pytest.importorskip("figures")
+    df = gisaxs.convert(make_frame(5, 6, 0.5, -1.0, 3.0, np.arange(30.0).reshape(6, 5)), TOY)
+    a4 = 297.0 / 210.0
+    for fmt in ("png", "pdf"):
+        maps = [figures.intensity_map(df[xc], df[yc], df["intensity"], "x", "y", preset=preset,
+                                      columns=columns, fmt=fmt, pixel=(0.3, 0.3))
+                for xc, yc in (("phi_f", "alpha_f"), ("x", "y"))]
+        prof = gisaxs.row_profile(df, "alpha_f")
+        line = figures.profile(prof.index, prof.to_numpy(), "a", preset=preset, columns=columns, fmt=fmt)
+        for data in maps + [line]:
+            assert _page_ratio(data) == pytest.approx(a4, rel=0.01)
+    width, height = figures.figure_size(preset, columns)
+    assert width / height == pytest.approx(a4)
+
+
 def test_figure_axis_limits_and_faded_profile():
     figures = pytest.importorskip("figures")
     df = gisaxs.convert(make_frame(5, 6, 0.5, -1.0, 3.0, np.arange(30.0).reshape(6, 5)), TOY)
@@ -595,6 +703,47 @@ def test_figure_axis_limits_and_faded_profile():
     assert pdf[:5] == b"%PDF-"
     with pytest.raises(figures.FigureError, match="fewer than 2"):
         figures.profile(prof.index, prof.to_numpy(), "a", xlim=[100, 200])
+
+
+def test_profile_labels(monkeypatch):
+    figures = pytest.importorskip("figures")
+    assert figures.mark_label("alpha_f", "0.280") == r"$\alpha_f$ = 0.280°"
+    assert figures.mark_label("qz", "-0.5", "A-1") == "$q_z$ = −0.5 Å$^{-\\mathrm{1}}$"
+    # each text goes towards the wider gap: as in the user's figure, the
+    # label at 0.280 sits left of its line and the one at 0.341 right of it
+    assert figures.mark_sides([0.341, 0.280], 0.0, 0.6) == ["right", "left"]
+    assert figures.mark_sides([0.1], 0.0, 0.6) == ["right"]
+    assert figures.mark_sides([0.5], 0.0, 0.6) == ["left"]
+
+    captured = {}
+
+    def keep(fig, fmt):
+        captured["ax"] = fig.axes[0]
+        return b"figure"
+
+    monkeypatch.setattr(figures, "_to_bytes", keep)
+    x = np.linspace(0.1, 0.6, 51)
+    y = 10.0 + 1000.0 * np.exp(-((x - 0.3) / 0.05) ** 2)
+    marks = [{"x": 0.341, "label": figures.mark_label("alpha_f", "0.341"), "style": 1},
+             {"x": 0.280, "label": figures.mark_label("alpha_f", "0.280"), "style": 0},
+             {"x": 0.9, "label": "outside", "style": 2}]
+    figures.profile(x, y, "a", marks=marks)
+    ax = captured["ax"]
+    try:
+        texts = {t.get_text(): t for t in ax.texts}
+        assert set(texts) == {r"$\alpha_f$ = 0.341°", r"$\alpha_f$ = 0.280°"}   # 0.9 left out
+        left, right = texts[r"$\alpha_f$ = 0.280°"], texts[r"$\alpha_f$ = 0.341°"]
+        assert left.get_ha() == "right" and right.get_ha() == "left"
+        assert left.get_color() == figures.MARK_STYLES[0]["color"]
+        assert right.get_color() == figures.MARK_STYLES[1]["color"]
+        lines = sorted(float(l.get_xdata()[0]) for l in ax.lines if len(set(l.get_xdata())) == 1)
+        assert lines == pytest.approx([0.280, 0.341])
+        # the data keep to the bottom of the log axis, below the labels
+        lo, hi = np.log10(ax.get_ylim())
+        assert (np.log10(y.max()) - lo) / (hi - lo) <= 1.0 - figures.MARK_HEADROOM + 1e-9
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
 
 
 def test_screen_colours_match_plotstyle():
@@ -712,13 +861,14 @@ def test_bridge_end_to_end(tmp_path):
     unsmoothed, _ = call("profile_data", kind="phi_f", smooth=1)
     assert meta["n_gaps"] == unsmoothed["n_gaps"] > 0     # the rod stays a gap
 
-    # without the offset correction the spot is not where alpha_i predicts it,
-    # so the window has to follow the peak (which the app always does)
-    err = json.loads(bridge.dispatch("apply_mask", json.dumps(
-        {"kind": "spot", "n_sigma": 4, "window": 15, "follow_peak": False}))["meta"])
-    assert "error" in err and "follow the peak" in err["error"]
+    # without the offset correction the spot is ~47 pixels above where alpha_i
+    # predicts it; the search starts at the brightest row along phi_f ~ 0, so
+    # it is found with or without following the peak
+    fixed, _ = call("apply_mask", kind="spot", n_sigma=4, window=15, follow_peak=False)
     meta, _ = call("apply_mask", kind="spot", n_sigma=4, window=15)       # follows
-    assert meta["n_masked"] > 0
+    assert meta["scan_column"] and meta["n_masked"] > 0
+    for m in (fixed, meta):
+        assert m["alpha0"] == pytest.approx(0.426, abs=0.002)
 
     meta, out = call("export_table", which="masked", fmt="csv.gz", q_unit="nm-1")
     blob = b"".join(bytes(piece) for piece in out["stream"])
@@ -735,6 +885,16 @@ def test_bridge_end_to_end(tmp_path):
     assert set(out["arrays"]) == {"x", "y", "raw"}
     _, out = call("export_figure", kind="alpha_f", fmt="png", profile=True, xlim=[0.0, 0.5])
     assert bytes(out["arrays"]["file"][:4]) == b"\x89PNG"
+    _, out = call("export_figure", kind="alpha_f", fmt="pdf", profile=True,
+                  marks=[{"x": 0.28, "text": "0.280", "style": 0},
+                         {"x": 0.341, "text": "0.341", "style": 1}])
+    assert bytes(out["arrays"]["file"][:5]) == b"%PDF-"
+    labels = bridge._marks("qz", [{"x": 0.3, "text": "$\\oops"}, {"x": -1, "text": "-1.50"}], "nm-1")
+    assert [m["label"] for m in labels] == [r"$q_z$ = 0.3 nm$^{-\mathrm{1}}$",
+                                            "$q_z$ = −1.50 nm$^{-\\mathrm{1}}$"]
+    bad = json.loads(bridge.dispatch("export_figure", json.dumps(
+        {"kind": "alpha_f", "fmt": "png", "profile": True, "marks": [{"x": "abc"}]}))["meta"])
+    assert bad.get("user_error") and "number" in bad["error"]
     _, out = call("export_figure", kind="af_pf", fmt="png", xlim=[-0.2, 0.2], ylim=[0.2, 0.6])
     assert bytes(out["arrays"]["file"][:4]) == b"\x89PNG"
     bad = json.loads(bridge.dispatch("export_figure", json.dumps(
@@ -790,3 +950,60 @@ def test_bridge_end_to_end(tmp_path):
         assert meta["steps"]["8"]["rows_kept"] == 925
     finally:
         bridge.S.raw = saved
+
+
+@needs_both
+def test_bridge_with_a_reference_frame(tmp_path, monkeypatch):
+    bridge = pytest.importorskip("bridge")
+
+    def call(cmd, **kw):
+        out = bridge.dispatch(cmd, json.dumps(kw))
+        meta = json.loads(out["meta"])
+        assert "error" not in meta, meta.get("error")
+        return meta
+
+    monkeypatch.setattr(bridge.S, "ref", None)       # restored afterwards
+    call("load_pro", path=str(REAL_PRO), name=REAL_PRO.name)
+    call("load_dat", path=str(REAL_DAT), name=REAL_DAT.name)
+    spot_x, spot_y = 0.180, 20.27          # the specular spot in frame-000, raw
+
+    # a reference whose beam is where the frame's leaked direct beam shows
+    write_dat(tmp_path / "ref.dat", reference_frame(-0.049, 3.758))
+    ref = call("load_ref", path=str(tmp_path / "ref.dat"), name="ref.dat")
+    assert not ref["half_cut"] and ref["y0"] == pytest.approx(3.758, abs=0.04)
+    meta = call("convert", correct_offset=False)
+    cal = meta["reference"]
+    assert meta["x0"] == pytest.approx(ref["x0"]) and meta["y0"] == pytest.approx(ref["y0"])
+    assert cal["spot"]["x"] == pytest.approx(spot_x - ref["x0"], abs=0.04)
+    assert cal["spot"]["y"] == pytest.approx(spot_y - ref["y0"], abs=0.04)
+    want = gisaxs.alpha_i_from_specular(cal["spot"]["x"], cal["spot"]["y"], bridge.S.geom.L)
+    assert meta["alpha_i"] == pytest.approx(want) and meta["alpha_i"] == pytest.approx(0.2957, abs=3e-4)
+    assert cal["alpha_i_pro"] == pytest.approx(0.299991444658313)
+    assert cal["delta"] == pytest.approx(meta["alpha_i"] - cal["alpha_i_pro"])
+    assert cal["spot"]["alpha_f"] == pytest.approx(meta["alpha_i"], abs=1e-4)
+    header = gisaxs.export_header(bridge._export_meta(bridge.S.cut), "nm-1")
+    assert any(l.startswith("# Pixels shifted: x_mm = x - ") and "reference frame ref.dat" in l
+               for l in header)
+    assert any(l.startswith("# Incidence angle measured: alpha_i = 0.295") for l in header)
+    assert any(l.startswith("# Incidence angle alpha_i = 0.295") for l in header)
+    # the spot mask now looks where the measured alpha_i puts the spot
+    m = call("apply_mask", kind="spot", n_sigma=4, window=15)
+    assert m["alpha0"] == pytest.approx(meta["alpha_i"], abs=m["pixel_alpha"])
+
+    # the same beam half-cut at the spot-only origin (3.519 mm): the lower
+    # edge is taken, and alpha_i comes back to the .pro value
+    write_dat(tmp_path / "ref.dat", reference_frame(0.18, 3.519, half_cut=True))
+    ref = call("load_ref", path=str(tmp_path / "ref.dat"), name="half.dat")
+    assert ref["half_cut"] and ref["y0"] == pytest.approx(3.519, abs=0.04)
+    assert bridge.S.cut is None                      # the old conversion is gone
+    meta = call("convert", correct_offset=False)
+    assert meta["alpha_i"] == pytest.approx(0.3000, abs=5e-4)
+
+    # the reference stays for the next frame of the series; clear_ref drops it
+    call("load_pro", path=str(REAL_PRO), name=REAL_PRO.name)
+    call("load_dat", path=str(REAL_DAT), name=REAL_DAT.name)
+    assert call("convert", correct_offset=False)["reference"]["name"] == "half.dat"
+    call("clear_ref")
+    meta = call("convert", correct_offset=False)
+    assert meta["reference"] is None and meta["alpha_i"] == pytest.approx(0.299991444658313)
+    assert meta["x0"] == meta["y0"] == 0

@@ -363,7 +363,19 @@ async function loadFiles() {
 function resetAnalysis() {
   for (const card of cards.values()) card.destroy();
   cards.clear();
-  $$("input[data-map], input[data-profile], #show-raw").forEach((box) => { box.checked = false; });
+  $("#show-raw").checked = false;
+  resetConversion();
+  Object.assign(state, { pro: null, dat: null, version: 0 });
+  markDone(1, false);
+  lockFrom(2);
+}
+
+/** Forget steps 5 on (the conversion, masks and their plots); the raw data stay. */
+function resetConversion() {
+  for (const [key, card] of cards) {
+    if (key !== "raw") { card.destroy(); cards.delete(key); }
+  }
+  $$("input[data-map], input[data-profile]").forEach((box) => { box.checked = false; });
   $$('input[name="rod"], input[name="spot"]').forEach((r) => { r.checked = false; });
   $("#rod-options").hidden = true;
   $("#spot-options").hidden = true;
@@ -371,10 +383,8 @@ function resetAnalysis() {
   $("#spot-question-wrap").hidden = false;
   for (const id of ["res-5", "res-6", "res-7", "res-8", "res-10", "res-11"]) $(`#${id}`).innerHTML = "";
   for (const n of [5, 9, 10, 11]) clearMsg(n);
-  Object.assign(state, { pro: null, dat: null, conv: null, version: 0, maskKind: "none",
-                         rod: null, spot: null, plotsUnlocked: false });
-  markDone(1, false);
-  lockFrom(2);
+  Object.assign(state, { conv: null, maskKind: "none", rod: null, spot: null, plotsUnlocked: false });
+  lockFrom(5);
 }
 
 // ---------------------------------------------------------------------------
@@ -438,14 +448,15 @@ $("#btn-convert").addEventListener("click", async (event) => {
   button.disabled = true;
   const token = state.loadToken;
   try {
-    // The direct-beam offset is always found and corrected (spot.find_offset).
-    const r = await py("convert", {}, [], "Converting…");
+    // The detector x, y are used as they are in the .dat file (the offset
+    // correction, spot.find_offset, is switched off).
+    const r = await py("convert", { correct_offset: false }, [], "Converting…");
     if (token !== state.loadToken) return;
     state.conv = r.meta;
     state.version = r.meta.version;
     state.maskKind = "none";
     if (r.meta.offset_error) {
-      showMsg(5, `${capitalise(r.meta.offset_error)}\nThe detector was used as it is.`, "warn");
+      showMsg(5, capitalise(r.meta.offset_error), "warn");
     }
     renderConversion();
     for (const n of [5, 6, 7, 8]) { unlock(n); markDone(n); }
@@ -473,7 +484,8 @@ function renderConversion() {
   const st = state.conv.steps;
   const u = UNITS[state.qUnit];
   const deg = String.raw`\mathrm{deg}`;
-  setMath($("#res-5"), `<p class="note">Added 2 columns for all ${tex(texNum(int(state.dat.pixels)))} pixels.</p>` +
+  setMath($("#res-5"),
+    `<p class="note">Added 2 columns for all ${tex(texNum(int(state.dat.pixels)))} pixels.</p>` +
     rangeTable([["phi_f", String.raw`\varphi_f`, st["5"].phi_f, deg],
                 ["alpha_f", String.raw`\alpha_f`, st["5"].alpha_f, deg]]));
   const dev = st["6"].max_rel_dev.toExponential(1).split("e");
@@ -702,7 +714,9 @@ function axisDef(name) {
   };
   const d = defs[name];
   const full = String.raw`${d.tex}\ (${d.unit})`;
-  return Object.assign(d, { title: `$${full}$`, page: tex(full) });
+  // after a number on a profile label: 0.280°, 0.52 nm⁻¹
+  const markUnit = d.unit === String.raw`\mathrm{deg}` ? String.raw`^\circ` : String.raw`\ ${d.unit}`;
+  return Object.assign(d, { title: `$${full}$`, page: tex(full), markUnit });
 }
 
 function axisStyle(title, extra = {}) {
@@ -735,6 +749,20 @@ const PROFILES = {
   qz: { title: String.raw`Mean counts per pixel vs \(q_z\)`, plain: "profile vs qz",
         axis: "qz", slug: "profile-vs-qz", along: "detector rows" },
 };
+
+/** For each profile label line at xs, the side its text goes: towards the
+    wider gap to the next line or to the axis edge, so neighbouring labels
+    part.  The same rule as figures.mark_sides() for the exported figure. */
+function markSides(xs, lo, hi) {
+  const order = xs.map((_, i) => i).sort((a, b) => xs[a] - xs[b]);
+  const sides = new Array(xs.length);
+  order.forEach((i, k) => {
+    const left = xs[i] - (k > 0 ? xs[order[k - 1]] : lo);
+    const right = (k + 1 < order.length ? xs[order[k + 1]] : hi) - xs[i];
+    sides[i] = right >= left ? "right" : "left";
+  });
+  return sides;
+}
 
 const cards = new Map();
 
@@ -1108,6 +1136,75 @@ class ProfileCard extends Card {
       }
       this.refresh();
     });
+
+    // Labelled vertical lines: [{value, text (as typed), style (index)}].
+    this.marks = [];
+    const ax = axisDef(def.axis);
+    this.setLabel(".mark-sym", tex(`${ax.tex} =`));
+    this.setLabel(".mark-unit", tex(ax.markUnit));
+    const mark = $(".opt-mark", this.el);
+    $(".opt-mark-add", this.el).addEventListener("click", () => this.addMark());
+    mark.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); this.addMark(); }
+    });
+    $(".mark-list", this.el).addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-mark]");
+      if (!button) return;
+      this.marks.splice(Number(button.dataset.mark), 1);
+      this.renderMarks();
+      if (this.data) this.draw();
+    });
+  }
+
+  /** The label text for a value, in TeX: "\alpha_f = 0.280^\circ". */
+  markTex(text) {
+    const ax = axisDef(this.def.axis);
+    return String.raw`${ax.tex} = ${texNum(text)}${ax.markUnit}`;
+  }
+
+  addMark() {
+    const input = $(".opt-mark", this.el);
+    const text = input.value.trim();
+    const value = Number(text);
+    if (text === "" || !Number.isFinite(value)) {
+      this.note.textContent = "Type a number in the label box first.";
+      return;
+    }
+    const used = new Set(this.marks.map((m) => m.style));
+    let style = 0;
+    while (used.has(style)) style += 1;
+    this.marks.push({ value, text, style });
+    input.value = "";
+    this.renderMarks();
+    if (this.data) this.draw();
+  }
+
+  /** The labels as chips under the options, each with its line style and a remove button. */
+  renderMarks() {
+    const styles = state.init.colours.marks;
+    const dashes = { dot: "2 2.5", dash: "5 3", dashdot: "5 2 1.5 2", longdash: "8 3" };
+    setMath($(".mark-list", this.el), this.marks.map((m, i) => {
+      const s = styles[m.style % styles.length];
+      return `<span class="mark-chip" style="--c:${s.color}">` +
+        `<svg width="6" height="20" aria-hidden="true"><line x1="3" y1="1" x2="3" y2="19" stroke="${s.color}" ` +
+        `stroke-width="2" stroke-dasharray="${dashes[s.dash]}"/></svg>${tex(this.markTex(m.text))}` +
+        `<button type="button" data-mark="${i}" title="Remove this label" aria-label="Remove this label">×</button></span>`;
+    }).join(""));
+  }
+
+  /** Limits and labels typed in one q unit, converted when the unit changes;
+      a label keeps the number of significant digits it was typed with. */
+  rescaleLimits(factor) {
+    super.rescaleLimits(factor);
+    if (!this.usesQ || !this.marks.length) return;
+    for (const m of this.marks) {
+      const digits = Math.max(1, m.text.replace(/^[+-]/, "").replace(/e.*$/i, "")
+        .replace(".", "").replace(/^0+/, "").length);
+      m.value *= factor;
+      const text = m.value.toPrecision(Math.min(digits, 21));
+      m.text = /e/i.test(text) ? String(Number(text)) : text;
+    }
+    this.renderMarks();
   }
 
   /** The smoothing window typed in the card: an odd whole number, 1 = none. */
@@ -1133,7 +1230,8 @@ class ProfileCard extends Card {
   }
 
   exportArgs() {
-    return { log: $(".opt-log", this.el).checked, smooth: this.smoothing(), xlim: this.limits().x };
+    return { log: $(".opt-log", this.el).checked, smooth: this.smoothing(), xlim: this.limits().x,
+             marks: this.marks.map((m) => ({ x: m.value, text: m.text, style: m.style })) };
   }
 
   /** The x range shown with no limits: the data's own. */
@@ -1190,19 +1288,58 @@ class ProfileCard extends Card {
         hovertemplate: `${where}, I = %{y:.4~r} cts<extra></extra>` },
     ];
     const limited = lim.x[0] != null || lim.x[1] != null;
-    const xRange = limited
-      ? { range: [lim.x[0] == null ? x[0] : lim.x[0], lim.x[1] == null ? x[x.length - 1] : lim.x[1]], autorange: false }
-      : { autorange: true };
+    const xlo = lim.x[0] == null ? x[0] : lim.x[0];
+    const xhi = lim.x[1] == null ? x[x.length - 1] : lim.x[1];
+    const xRange = limited ? { range: [xlo, xhi], autorange: false } : { autorange: true };
+
+    // Labelled vertical lines, the text at the top on the side with more
+    // room, and head room above the data for it (as figures._draw_marks).
+    this.setLabel(".mark-sym", tex(`${ax.tex} =`));
+    this.setLabel(".mark-unit", tex(ax.markUnit));
+    const markStyles = state.init.colours.marks;
+    const shown = this.marks.filter((m) => m.value >= xlo && m.value <= xhi);
+    const sides = markSides(shown.map((m) => m.value), xlo, xhi);
+    const shapes = [], annotations = [];
+    shown.forEach((m, i) => {
+      const s = markStyles[m.style % markStyles.length];
+      const right = sides[i] === "right";
+      shapes.push({ type: "line", xref: "x", yref: "paper", x0: m.value, x1: m.value, y0: 0, y1: 1,
+                    line: { color: s.color, width: 2, dash: s.dash } });
+      annotations.push({ xref: "x", yref: "paper", x: m.value, y: 1, xanchor: right ? "left" : "right",
+                         yanchor: "top", xshift: right ? 5 : -5, yshift: -4, showarrow: false,
+                         text: `$${this.markTex(m.text)}$`, font: { color: s.color, size: 17 } });
+    });
+    let yRange = { autorange: true };
+    if (shown.length) {
+      let ylo = Infinity, yhi = -Infinity;
+      for (const series of smooth ? [measured, smoothed] : [measured]) {
+        for (const v of series) {
+          if (!Number.isFinite(v) || (log && v <= 0)) continue;
+          const t = log ? Math.log10(v) : v;
+          if (t < ylo) ylo = t;
+          if (t > yhi) yhi = t;
+        }
+      }
+      if (ylo < yhi) {
+        const pad = 0.05 * (yhi - ylo);          // matplotlib's default margins
+        ylo -= pad;
+        yhi += pad;
+        yRange = { range: [ylo, ylo + (yhi - ylo) / (1 - state.init.colours.mark_headroom)], autorange: false };
+      }
+    }
+
     const layout = {
       font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#fff",
       margin: { l: 10, r: 16, t: smooth ? 30 : 16, b: 10 },
       xaxis: axisStyle(ax.title, Object.assign(xRange, spikes)),
-      yaxis: axisStyle("Mean counts per pixel", Object.assign({ type: log ? "log" : "linear", autorange: true }, spikes)),
+      yaxis: axisStyle("Mean counts per pixel", Object.assign({ type: log ? "log" : "linear" }, yRange, spikes)),
+      shapes, annotations,
       hovermode: "closest", hoverdistance: -1, spikedistance: -1,
       showlegend: smooth,
       legend: { orientation: "h", x: 0, xanchor: "left", y: 1.0, yanchor: "bottom", font: { size: 13 } },
       hoverlabel: { font: { family: FONT.family, size: 12 } },
-      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${log}|${meta.smooth}|${JSON.stringify(lim)}`,
+      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${log}|${meta.smooth}|` +
+                  `${JSON.stringify(lim)}|${shown.map((m) => m.value).join(",")}`,
     };
     Plotly.react(this.plot, traces, layout, PLOT_CONFIG).then(() => {
       if (!this.zoomListener) {
@@ -1212,9 +1349,11 @@ class ProfileCard extends Card {
     });
     $(".card-meta", this.el).textContent = `${int(meta.n)} ${this.def.along}, ${maskLabel()}`;
     const smoothing = meta.smooth > 1 ? `smoothed: centred running mean of ${meta.smooth} points` : "not smoothed";
+    const hidden = this.marks.length - shown.length;
     this.note.textContent = `${smoothing} · ` + (meta.n_gaps
       ? `${int(meta.n_gaps)} fully masked ${this.def.along.replace("detector ", "")} drawn as gaps`
-      : "no fully masked columns or rows");
+      : "no fully masked columns or rows") +
+      (hidden ? ` · ${hidden === 1 ? "1 label lies" : `${hidden} labels lie`} outside the plotted range` : "");
   }
 }
 
@@ -1288,8 +1427,8 @@ $$(".segmented button[data-unit]").forEach((button) => button.addEventListener("
   const unit = button.dataset.unit;
   if (unit === state.qUnit) return;
   const factor = UNITS[unit].factor / UNITS[state.qUnit].factor;
-  for (const card of cards.values()) card.rescaleLimits(factor);
   state.qUnit = unit;
+  for (const card of cards.values()) card.rescaleLimits(factor);
   $$(".segmented button[data-unit]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.unit === unit)));
   if (state.pro) renderPro();
   if (state.conv) {

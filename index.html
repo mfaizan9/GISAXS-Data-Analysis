@@ -13,7 +13,8 @@
 <script>
   // MathJax renders every symbol and number written as \( ... \) on the page,
   // and Plotly uses it for axis titles written as $ ... $ (SVG output).
-  window.MathJax = { svg: { fontCache: "global" } };
+  // No automatic breaks inside inline maths: labels and chips stay on one line.
+  window.MathJax = { svg: { fontCache: "global", linebreaks: { inline: false } } };
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-svg.js" integrity="sha384-my9P1jDckpHD+5LZsLQ0gaiCl/RMO32HaqwBtbo/25QIMVr6xXIUCg1jvdSRcvb4" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@4.1.1/plotly.min.js" integrity="sha384-AFNp2MtSm5/oZbEs/J19F/Ah57MEiVsoed8nE3fq2Wnccdl1u/EkyJ9XKKU8rt7+" crossorigin="anonymous"></script>
@@ -279,6 +280,10 @@
       <label>Smoothing: running mean of <input type="number" class="opt-smooth" min="1" step="2" value="7" title="An odd whole number of points; 1 = no smoothing"> points <span class="muted">(odd; 1 = none)</span></label>
       <span class="limits"><span class="lim-x"></span> from <input type="number" class="opt-xmin" step="any" placeholder="min"> to <input type="number" class="opt-xmax" step="any" placeholder="max"></span>
       <button type="button" class="opt-full">Full range</button>
+    </div>
+    <div class="card-options card-marks">
+      <span class="limits">Add label <span class="mark-sym"></span> <input type="number" class="opt-mark" step="any" placeholder="value"><span class="mark-unit"></span> <button type="button" class="opt-mark-add">Add</button></span>
+      <span class="mark-list"></span>
     </div>
     <div class="plot plot-profile"></div>
     <footer class="card-foot">
