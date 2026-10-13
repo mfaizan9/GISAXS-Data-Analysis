@@ -1007,3 +1007,53 @@ def test_bridge_with_a_reference_frame(tmp_path, monkeypatch):
     meta = call("convert", correct_offset=False)
     assert meta["reference"] is None and meta["alpha_i"] == pytest.approx(0.299991444658313)
     assert meta["x0"] == meta["y0"] == 0
+
+
+@needs_both
+def test_alpha_check_and_correction(monkeypatch):
+    bridge = pytest.importorskip("bridge")
+
+    def call(cmd, **kw):
+        meta = json.loads(bridge.dispatch(cmd, json.dumps(kw))["meta"])
+        assert "error" not in meta, meta.get("error")
+        return meta
+
+    monkeypatch.setattr(bridge.S, "ref", None)
+    call("load_pro", path=str(REAL_PRO), name=REAL_PRO.name)
+    call("load_dat", path=str(REAL_DAT), name=REAL_DAT.name)
+    c = call("check_alpha")
+    # frame-000: the spot is 47 pixels above alpha_i = 0.3 deg
+    assert c["needs_correction"] and c["pixels_off"] > 40
+    assert c["spot"]["alpha_f"] == pytest.approx(0.426, abs=1e-3)
+    L = bridge.S.geom.L
+    assert c["alpha_i_corrected"] == pytest.approx(
+        gisaxs.alpha_i_from_specular(c["spot"]["x"], c["spot"]["y"], L))
+    # the spot is 2 alpha_i above the direct beam: alpha_i + delta -> alpha_i + delta / 2
+    assert c["alpha_i_corrected"] - c["alpha_i"] == pytest.approx(c["delta"] / 2, rel=0.02)
+    assert c["alpha_i_corrected"] == pytest.approx(0.3630, abs=5e-4)
+
+    m = call("convert", correct_offset=False, correct_alpha=True)       # "Yes"
+    assert m["alpha_i"] == pytest.approx(c["alpha_i_corrected"])
+    assert m["alpha_fix"]["alpha_i_pro"] == pytest.approx(0.299991444658313)
+    assert m["x0"] == m["y0"] == 0                                      # pixels not moved
+    s = call("apply_mask", kind="spot", n_sigma=4, window=15)
+    assert s["alpha0"] == pytest.approx(m["alpha_i"], abs=s["pixel_alpha"])   # spot now at alpha_i
+    header = gisaxs.export_header(bridge._export_meta(bridge.S.cut), "nm-1")
+    assert any(l.startswith("# Incidence angle alpha_i = 0.363") for l in header)
+    assert any(l.startswith("# Incidence angle measured: alpha_i = 0.363") and "0.299991 deg" in l
+               for l in header)
+
+    m = call("convert", correct_offset=False)                           # "No"
+    assert m["alpha_i"] == pytest.approx(0.299991444658313) and m["alpha_fix"] is None
+    header = gisaxs.export_header(bridge._export_meta(bridge.S.cut), "nm-1")
+    assert not any(l.startswith("# Incidence angle measured") for l in header)
+
+    # a spot where alpha_i puts it: no correction offered
+    geom = bridge.S.geom
+    raw = make_frame(81, 400, 0.075, -3.0, -2.0)
+    X, Y = raw["x"].to_numpy(), raw["y"].to_numpy()
+    raw["intensity"] = 2.0 + 5000.0 * np.exp(-0.5 * (X / 0.2) ** 2
+                                             - 0.5 * ((Y - gisaxs.specular_y(geom)) / 0.25) ** 2)
+    monkeypatch.setattr(bridge.S, "raw", raw)
+    c = call("check_alpha")
+    assert not c["needs_correction"] and abs(c["pixels_off"]) <= 1

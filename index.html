@@ -124,6 +124,7 @@
 <section class="step locked" id="step-5">
   <header class="step-head"><span class="num">5</span><h2>Exit Angles \((x, y) \to (\varphi_f, \alpha_f)\)</h2><span class="chip"></span></header>
   <div class="step-body">
+    <div class="alpha-check" id="alpha-check" hidden></div>
     <div class="actions">
       <button type="button" class="primary" id="btn-convert">Convert (runs steps 5&ndash;8)</button>
       <span class="muted">Adds 8 columns to every pixel, then drops the rows below the sample horizon.</span>
@@ -276,7 +277,7 @@
   <article class="card">
     <header class="card-head"><h3 class="card-title"></h3><span class="card-meta muted"></span></header>
     <div class="card-options">
-      <label class="check"><input type="checkbox" class="opt-log" checked> Log y-axis</label>
+      <label class="check"><input type="checkbox" class="opt-log"> Log y-axis</label>
       <label>Smoothing: running mean of <input type="number" class="opt-smooth" min="1" step="2" value="7" title="An odd whole number of points; 1 = no smoothing"> points <span class="muted">(odd; 1 = none)</span></label>
       <span class="limits"><span class="lim-x"></span> from <input type="number" class="opt-xmin" step="any" placeholder="min"> to <input type="number" class="opt-xmax" step="any" placeholder="max"></span>
       <button type="button" class="opt-full">Full range</button>

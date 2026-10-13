@@ -103,6 +103,8 @@ const state = {
   pro: null,             // load_pro result
   dat: null,             // load_dat result
   conv: null,            // convert result
+  alphaCheck: null,      // check_alpha result: where the specular spot sits
+  alphaFix: null,        // "yes" | "no": correct alpha_i from the spot
   qUnit: "nm-1",
   version: 0,            // data version in Python (changes with masks)
   maskKind: "none",
@@ -353,8 +355,8 @@ async function loadFiles() {
     markDone(3);
     unlock(4);
     unlock(5);
-    $("#btn-convert").disabled = false;
     idle(`Read ${int(d.meta.pixels)} pixels in ${d.meta.seconds.toFixed(1)} s.`);
+    await checkAlpha(token);
   } catch (err) {
     if (token === state.loadToken) showError(1, err);
   }
@@ -365,7 +367,9 @@ function resetAnalysis() {
   cards.clear();
   $("#show-raw").checked = false;
   resetConversion();
-  Object.assign(state, { pro: null, dat: null, version: 0 });
+  Object.assign(state, { pro: null, dat: null, version: 0, alphaCheck: null, alphaFix: null });
+  $("#alpha-check").hidden = true;
+  $("#alpha-check").innerHTML = "";
   markDone(1, false);
   lockFrom(2);
 }
@@ -442,15 +446,66 @@ function renderDat() {
 // 5-9. conversion
 // ---------------------------------------------------------------------------
 
-$("#btn-convert").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
+/** Before converting: where the specular spot sits with the .pro alpha_i.
+    Off by more than a pixel, the user is asked whether to correct alpha_i
+    from the spot; the answer runs the conversion. */
+async function checkAlpha(token) {
+  const box = $("#alpha-check");
+  const button = $("#btn-convert");
+  button.disabled = true;
+  try {
+    const r = await py("check_alpha", {}, [], "Finding the specular spot…");
+    if (token !== state.loadToken) return;
+    state.alphaCheck = r.meta;
+  } catch (err) {
+    if (token !== state.loadToken) return;
+    state.alphaCheck = null;
+    box.hidden = false;
+    box.innerHTML = `<p class="muted">${esc(capitalise(err.message))}. The incidence angle from the .pro file is used.</p>`;
+    button.disabled = false;
+    return;
+  }
+  const c = state.alphaCheck;
+  const deg = (v) => tex(String.raw`${texNum(fixed(v, 4))}^\circ`);
+  let html = `<p>${tex(String.raw`\alpha_i`)} = ${deg(c.alpha_i)} (<code>.pro</code>); the specular spot is at ` +
+    `${tex(String.raw`\alpha_f`)} = ${deg(c.spot.alpha_f)}.</p>`;
+  if (c.needs_correction) {
+    html += `<fieldset class="question"><legend>Correct ${tex(String.raw`\alpha_i`)} from the specular spot?</legend>` +
+      `<label class="radio"><input type="radio" name="alpha-fix" value="yes"> Yes, ${tex(String.raw`\alpha_i`)} = ${deg(c.alpha_i_corrected)}</label>` +
+      `<label class="radio"><input type="radio" name="alpha-fix" value="no"> No, keep ${deg(c.alpha_i)}</label></fieldset>`;
+  } else {
+    html += `<p class="muted">That is ${tex(String.raw`\alpha_i`)} within one pixel: no correction needed.</p>`;
+  }
+  box.hidden = false;
+  setMath(box, html);
+  button.disabled = c.needs_correction;           // the answer converts
+}
+
+$("#alpha-check").addEventListener("change", (event) => {
+  if (event.target.name !== "alpha-fix") return;
+  state.alphaFix = event.target.value;
+  if (state.conv) {
+    resetConversion();
+    unlock(5);
+  }
+  convert();
+});
+
+$("#btn-convert").addEventListener("click", () => convert());
+
+async function convert() {
+  const button = $("#btn-convert");
+  const answers = $$('input[name="alpha-fix"]');
   clearMsg(5);
   button.disabled = true;
+  answers.forEach((r) => { r.disabled = true; });
   const token = state.loadToken;
   try {
-    // The detector x, y are used as they are in the .dat file (the offset
-    // correction, spot.find_offset, is switched off).
-    const r = await py("convert", { correct_offset: false }, [], "Converting…");
+    // The detector x, y are used as they are in the .dat file: the direct
+    // beam is at the origin.  alpha_i is the .pro value, or the one the
+    // specular spot gives if the user chose the correction.
+    const r = await py("convert", { correct_offset: false, correct_alpha: state.alphaFix === "yes" },
+                       [], "Converting…");
     if (token !== state.loadToken) return;
     state.conv = r.meta;
     state.version = r.meta.version;
@@ -466,10 +521,12 @@ $("#btn-convert").addEventListener("click", async (event) => {
     markDone(9);
     idle(`Converted ${int(state.dat.pixels)} pixels; ${int(r.meta.steps["8"].pixels)} lie above the sample horizon.`);
   } catch (err) {
-    button.disabled = false;
+    button.disabled = !!(state.alphaCheck && state.alphaCheck.needs_correction && !state.alphaFix);
     showError(5, err);
+  } finally {
+    answers.forEach((r) => { r.disabled = false; });
   }
-});
+}
 
 function rangeTable(rows) {
   return `<div class="table-wrap"><table class="plain"><thead><tr><th>column</th><th>quantity</th>` +
@@ -484,8 +541,10 @@ function renderConversion() {
   const st = state.conv.steps;
   const u = UNITS[state.qUnit];
   const deg = String.raw`\mathrm{deg}`;
+  const fix = state.conv.alpha_fix;
+  const used = fix ? ` with ${tex(String.raw`\alpha_i = ${texNum(fixed(fix.alpha_i, 4))}^\circ`)}, corrected from the specular spot` : "";
   setMath($("#res-5"),
-    `<p class="note">Added 2 columns for all ${tex(texNum(int(state.dat.pixels)))} pixels.</p>` +
+    `<p class="note">Added 2 columns for all ${tex(texNum(int(state.dat.pixels)))} pixels${used}.</p>` +
     rangeTable([["phi_f", String.raw`\varphi_f`, st["5"].phi_f, deg],
                 ["alpha_f", String.raw`\alpha_f`, st["5"].alpha_f, deg]]));
   const dev = st["6"].max_rel_dev.toExponential(1).split("e");

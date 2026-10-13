@@ -238,6 +238,13 @@
 </section>
 
 <section>
+  <h2>Incidence angle from the specular spot</h2>
+  <p>The direct beam is at the detector origin. With a zero error in the alpha alignment the sample is not at the <code>.pro</code> \(\alpha_i\), and the specular spot shows at \(\alpha_f = \alpha_i + \delta\) instead of \(\alpha_i\). The spot leaves the sample at \(2\alpha_i\) from the incident beam, so its position \((x_s,\ y_s)\) gives the true incidence angle:</p>
+  $$\alpha_i = \tfrac12 \arctan\frac{\sqrt{x_s^2 + y_s^2}}{L} \;\approx\; \alpha_i^{\texttt{.pro}} + \frac{\delta}{2} .$$
+  <p>If the spot is more than one pixel from \(\alpha_i\), the converter offers this correction before converting; with it, every pixel is converted with the new \(\alpha_i\) and the spot then sits at \(\alpha_f = \alpha_i\).</p>
+</section>
+
+<section>
   <h2>Conventions and assumptions</h2>
   <ul class="tight">
     <li>The detector is perpendicular to the incident beam at distance \(L = |\mathbf N|\); only the length of the <code>.pro</code> normal vector \(\mathbf N\) is used.</li>

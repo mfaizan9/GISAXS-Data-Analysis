@@ -26,7 +26,8 @@ that unlock in order:
 3. **Raw data**: pixel count, $x$ and $y$ ranges, and the first few rows.
 4. **Raw intensity map** (optional): y vs x over the full detector.
 5. **Exit angles** $(x, y) \to (\varphi_f, \alpha_f)$, from the detector
-   $x, y$ as they are in the `.dat` file.
+   $x, y$ as they are in the `.dat` file. If the specular spot is not at
+   $\alpha_f = \alpha_i$, it offers to correct $\alpha_i$ from the spot (see below).
 6. **Final wavevector** $k_{fx}, k_{fy}, k_{fz}$.
 7. **Scattering vector** $q_x, q_y, q_z$.
 8. **Horizon cut**: whole detector rows below the sample horizon are dropped, so
@@ -165,16 +166,38 @@ file keeps 925 × 1028 = 950,900 pixels.
 - Counts of −1 (dead pixels) become NaN on reading, and so does their variance.
   NaN already in the file is kept as NaN.
 
-## The direct-beam offset (switched off)
+## Incidence angle from the specular spot (optional)
 
-The formulas take the detector origin in the `.dat` file to be the direct beam,
-and $\alpha_i$ comes from the `.pro` file. No offset correction is applied: the
-page converts with `convert(correct_offset=False)` and the pixels keep the
-file's $x, y$. The backend still has two corrections, unused by the page: from
-the specular spot alone (`spot.find_offset`, keeping the `.pro` $\alpha_i$),
-and from a frame at $\alpha_i = 0$ that measures the direct beam
-(`bridge.cmd_load_ref`, `spot.find_reference_beam`; $\alpha_i$ is then taken
-from the spot).
+The direct beam is at the detector origin of the `.dat` file. When the
+alpha alignment has a zero error, the sample is not at the `.pro` $\alpha_i$,
+and the specular spot does not sit at $\alpha_f = \alpha_i$ but at
+$\alpha_i + \delta$.
+
+As soon as the files are read, step 5 finds the specular spot (the brightest
+row along $x \simeq 0$, then the window measurement of the spot mask) and shows
+$\alpha_i$ and the spot's $\alpha_f$:
+
+- within one pixel of $\alpha_i$: no correction is needed, and **Convert** uses
+  the `.pro` $\alpha_i$;
+- further away, it asks **Correct $\alpha_i$ from the specular spot?** The
+  answer runs the conversion, and changing it runs the conversion again.
+  **Yes** converts every pixel with
+
+  $$\alpha_i = \tfrac12 \arctan\frac{\sqrt{x_s^2 + y_s^2}}{L},$$
+
+  the angle that puts the spot, $2\alpha_i$ above the direct beam, where it was
+  measured. A spot at $\alpha_i + \delta$ means $\alpha_i + \delta/2$, not
+  $\alpha_i + \delta$; afterwards the spot sits at $\alpha_f$ = the new
+  $\alpha_i$. The pixels are not moved. **No** keeps the `.pro` value.
+
+The exported table's header records both angles and the spot. On the test
+frames the spot is 0.126° above $\alpha_i$ in `frame-000` (corrected
+$\alpha_i$ 0.3630° for 0.3000°), about 0.045° below it in the BCVS series and
+about 0.14° above it in the csv series.
+
+The backend also keeps two direct-beam offset corrections that the page does
+not use: from the specular spot alone (`spot.find_offset`) and from a frame at
+$\alpha_i = 0$ (`bridge.cmd_load_ref`).
 
 ## Masks
 

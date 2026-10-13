@@ -59,6 +59,8 @@ class Session:
         self.geom_used = None    # what the conversion used (alpha_i may be fixed)
         self.offset = None       # the direct-beam offset (spot.find_offset)
         self.calibration = None  # with a reference frame: origin and alpha_i
+        self.alpha_check = None  # cmd_check_alpha(): where the specular spot is
+        self.alpha_fix = None    # the alpha_i correction the conversion used
         self.dat_name = None
         self.raw = None          # x, y, intensity[, variance]; full detector
         self.cut = None          # converted, rows below the horizon dropped
@@ -199,6 +201,7 @@ def cmd_load_dat(path, name):
     S.dat_name = name
     S.raw = S.cut = S.data = None
     S.geom_used = S.offset = S.calibration = None
+    S.alpha_check = S.alpha_fix = None
     S.mask_kind, S.mask_text = "none", ""
     t0 = time.time()
     try:
@@ -303,7 +306,47 @@ def _calibrate():
     return base, geom, report, None
 
 
-def cmd_convert(correct_offset=True, use_reference=True):
+# The specular spot counts as being at alpha_f = alpha_i when it is within
+# this many pixels of it; then no correction is offered.
+ALPHA_TOLERANCE_PIXELS = 1.0
+
+
+def cmd_check_alpha():
+    """Where the specular spot sits, before converting: alpha_f of the spot
+    with the .pro alpha_i, and the alpha_i the spot itself gives.
+
+    The direct beam is at the detector origin, so the spot is 2 alpha_i above
+    it: with a zero error, a spot at alpha_f = alpha_i + delta means the true
+    incidence angle is about alpha_i + delta / 2, exactly
+    gisaxs.alpha_i_from_specular(x_s, y_s, L).  needs_correction is False when
+    the spot is within ALPHA_TOLERANCE_PIXELS pixels of alpha_i.
+    """
+    _require("raw")
+    geom = S.geom
+    progress("Finding the specular spot…")
+    try:
+        # brightest row along x ~ 0, above half the horizon height (clear of
+        # the direct beam and the beamstop)
+        found = spot.find_on_detector(S.raw, geom.L, geom.alpha_i, scan_column=True,
+                                      above=0.5 * gisaxs.horizon_y(geom))
+    except spot.SpotError as err:
+        S.alpha_check = None
+        raise InputError(f"could not find the specular spot: {err}") from None
+    phi, alpha = (float(v) for v in gisaxs.exit_angles(found["x0"], found["y0"], geom))
+    pixel = float(np.degrees(found["pixel_y"] / geom.L))
+    delta = alpha - geom.alpha_i
+    S.alpha_check = {
+        "alpha_i": geom.alpha_i,
+        "spot": {"x": found["x0"], "y": found["y0"], "alpha_f": alpha, "phi_f": phi},
+        "delta": delta, "pixel_alpha": pixel, "pixels_off": delta / pixel,
+        "tolerance_pixels": ALPHA_TOLERANCE_PIXELS,
+        "needs_correction": bool(abs(delta) > ALPHA_TOLERANCE_PIXELS * pixel),
+        "alpha_i_corrected": gisaxs.alpha_i_from_specular(found["x0"], found["y0"], geom.L),
+    }
+    return _pack(S.alpha_check)
+
+
+def cmd_convert(correct_offset=True, use_reference=True, correct_alpha=False):
     """Steps 5-8.
 
     With a reference frame loaded (cmd_load_ref) and use_reference: every pixel
@@ -312,7 +355,10 @@ def cmd_convert(correct_offset=True, use_reference=True):
     the .pro file.  Otherwise, with correct_offset, every pixel is moved by the
     offset spot.find_offset finds from the spot alone, keeping the .pro
     alpha_i.  Otherwise the frame is converted as it is.  If the specular spot
-    cannot be found, offset_error says so and why."""
+    cannot be found, offset_error says so and why.
+
+    correct_alpha: convert with the alpha_i the specular spot gives
+    (cmd_check_alpha) instead of the .pro value; the pixels are not moved."""
     _require("raw")
     geom, offset, x0, y0, offset_error = S.geom, None, 0.0, 0.0, None
     reference = None
@@ -327,6 +373,13 @@ def cmd_convert(correct_offset=True, use_reference=True):
             offset_error = str(err)
     if reference is None:
         base = gisaxs.shift_detector(S.raw, x0, y0) if (x0 or y0) else S.raw
+    alpha_fix = None
+    if correct_alpha and reference is None:
+        if S.alpha_check is None:
+            cmd_check_alpha()
+        check = S.alpha_check
+        geom = dataclasses.replace(geom, alpha_i=check["alpha_i_corrected"])
+        alpha_fix = dict(check, alpha_i_pro=check["alpha_i"], alpha_i=geom.alpha_i)
     n = len(base)
     df = base.copy()
     steps = {}
@@ -367,12 +420,13 @@ def cmd_convert(correct_offset=True, use_reference=True):
     }
     S.cut = cut
     S.data = cut
-    S.geom_used, S.offset, S.calibration = geom, offset, reference
+    S.geom_used, S.offset, S.calibration, S.alpha_fix = geom, offset, reference, alpha_fix
     S.mask_kind, S.mask_text = "none", ""
     S.version += 1
     return _pack({"steps": steps, "version": S.version,
                   "alpha_i": geom.alpha_i, "x0": x0, "y0": y0, "offset": offset,
-                  "reference": reference, "offset_error": offset_error})
+                  "reference": reference, "alpha_fix": alpha_fix,
+                  "offset_error": offset_error})
 
 
 def cmd_table_head(which="converted", q_unit="nm-1"):
@@ -388,6 +442,14 @@ def _export_meta(df, mask_text=""):
     o = S.offset
     cal = S.calibration
     alpha = ""
+    fix = S.alpha_fix
+    if fix:
+        sp = fix["spot"]
+        alpha = (f"alpha_i = {fix['alpha_i']:.6f} deg from the specular spot at x = "
+                 f"{sp['x']:.4f} mm, y = {sp['y']:.4f} mm (the direct beam at the origin), "
+                 f"alpha_i = atan(sqrt(x^2 + y^2) / L) / 2; with the .pro value "
+                 f"{fix['alpha_i_pro']:.6f} deg the spot was at alpha_f = "
+                 f"{sp['alpha_f']:.6f} deg")
     if cal:
         edge = ("the lower edge of the half-cut beam, i.e. the sample surface"
                 if cal["half_cut"] else "its centroid")
@@ -649,6 +711,7 @@ COMMANDS = {
     "init": cmd_init,
     "load_pro": cmd_load_pro,
     "load_dat": cmd_load_dat,
+    "check_alpha": cmd_check_alpha,
     "load_ref": cmd_load_ref,
     "clear_ref": cmd_clear_ref,
     "convert": cmd_convert,
