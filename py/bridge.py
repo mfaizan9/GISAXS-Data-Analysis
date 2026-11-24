@@ -581,6 +581,7 @@ MAPS = {
     "y_x": ("data", "x", "y"),
     "af_pf": ("data", "phi_f", "alpha_f"),
     "qz_qy": ("data", "qy", "qz"),
+    "qz_qxy": ("data", "qxy", "qz"),
 }
 
 PROFILES = {
@@ -600,10 +601,17 @@ def _map_arrays(kind, q_unit):
     else:
         _require("cut")
         df = S.data
-    factor = gisaxs.q_unit_info(q_unit)[0] if xc in gisaxs.Q_COLUMNS else 1.0
-    X = mask.as_image(df, xc) * factor
-    Y = mask.as_image(df, yc) * factor
+    factor = gisaxs.q_unit_info(q_unit)[0] if xc in gisaxs.Q_COLUMNS + ["qxy"] else 1.0
+    X = _image(df, xc) * factor
+    Y = _image(df, yc) * factor
     return df, X, Y, df["intensity"].to_numpy()
+
+
+def _image(df, column):
+    """A column as a detector image; "qxy" is computed from q_x and q_y."""
+    if column == "qxy":
+        return gisaxs.q_xy(mask.as_image(df, "qx"), mask.as_image(df, "qy"))
+    return mask.as_image(df, column)
 
 
 def cmd_map_data(kind, q_unit="nm-1"):
@@ -648,11 +656,11 @@ def cmd_export_figure(kind, fmt="png", log=True, cmap="viridis", vmin=None,
                       vmax=None, zero_colour="white", preset="publication",
                       columns=1, q_unit="nm-1", profile=False,
                       smooth=gisaxs.DEFAULT_SMOOTHING, xlim=None, ylim=None,
-                      marks=None):
+                      marks=None, normalize=False):
     try:
         data, t0 = _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour,
                                 preset, columns, q_unit, profile, smooth,
-                                xlim, ylim, marks)
+                                xlim, ylim, marks, bool(normalize))
     except figures.FigureError as err:
         raise InputError(str(err)) from None
     mime = "application/pdf" if fmt == "pdf" else "image/png"
@@ -684,7 +692,7 @@ def _marks(kind, marks, q_unit):
 
 
 def _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour, preset, columns,
-                 q_unit, profile, smooth, xlim, ylim, marks=None):
+                 q_unit, profile, smooth, xlim, ylim, marks=None, normalize=False):
     t0 = time.time()
     if profile:
         progress(f"Drawing the {fmt.upper()} figure…")
@@ -692,7 +700,8 @@ def _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour, preset, columns,
         data = figures.profile(x, raw, figures.axis_label(kind, q_unit),
                                smoothed=smoothed if int(smooth) > 1 else None,
                                log=log, preset=preset, columns=int(columns),
-                               fmt=fmt, xlim=xlim, marks=_marks(kind, marks, q_unit))
+                               fmt=fmt, xlim=xlim, marks=_marks(kind, marks, q_unit),
+                               normalize=normalize)
     else:
         df, X, Y, counts = _map_arrays(kind, q_unit)
         progress(f"Drawing {len(counts):,} pixels into the {fmt.upper()} "
@@ -703,7 +712,7 @@ def _draw_figure(kind, fmt, log, cmap, vmin, vmax, zero_colour, preset, columns,
             figures.axis_label(xc, q_unit), figures.axis_label(yc, q_unit),
             log=log, cmap=cmap, vmin=vmin, vmax=vmax, zero_colour=zero_colour,
             preset=preset, columns=int(columns), fmt=fmt, pixel=_pitch(X, Y),
-            xlim=xlim, ylim=ylim)
+            xlim=xlim, ylim=ylim, normalize=normalize)
     return data, t0
 
 

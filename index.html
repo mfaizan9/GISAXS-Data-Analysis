@@ -222,6 +222,7 @@
   <div class="step-body">
     <div class="checks">
       <label class="check"><input type="checkbox" data-map="qz_qy"> \(q_z\) vs \(q_y\)</label>
+      <label class="check"><input type="checkbox" data-map="qz_qxy"> \(q_z\) vs \(q_{xy}\)</label>
       <label class="check"><input type="checkbox" data-map="af_pf"> \(\alpha_f\) vs \(\varphi_f\)</label>
       <label class="check"><input type="checkbox" data-map="y_x"> \(y\) vs \(x\)</label>
     </div>
@@ -231,9 +232,9 @@
 
 <!-- 13 ----------------------------------------------------------------- -->
 <section class="step locked" id="step-13">
-  <header class="step-head"><span class="num">13</span><h2>1D Intensity Profiles: Mean Counts per Pixel</h2><span class="chip"></span></header>
+  <header class="step-head"><span class="num">13</span><h2>1D Intensity Profiles</h2><span class="chip"></span></header>
   <div class="step-body">
-    <p class="note">The intensity is averaged over \(\varphi_f\), \(q_y\), \(\alpha_f\) or \(q_z\).</p>
+    <p class="note">The intensity is the mean counts per pixel, averaged over \(\varphi_f\), \(q_y\), \(\alpha_f\) or \(q_z\) and normalized to its maximum.</p>
     <div class="checks">
       <label class="check"><input type="checkbox" data-profile="phi_f"> vs \(\varphi_f\)</label>
       <label class="check"><input type="checkbox" data-profile="qy"> vs \(q_y\)</label>
@@ -254,6 +255,7 @@
   <article class="card">
     <header class="card-head"><h3 class="card-title"></h3><span class="card-meta muted"></span></header>
     <div class="card-options">
+      <label class="check"><input type="checkbox" class="opt-norm"> Normalized (maximum = 1)</label>
       <label class="check"><input type="checkbox" class="opt-log" checked> Log scale</label>
       <label>Colormap <select class="opt-cmap"></select></label>
       <label>Zero counts <select class="opt-zero"><option value="white" selected>white</option><option value="black">black</option></select></label>
@@ -277,6 +279,7 @@
   <article class="card">
     <header class="card-head"><h3 class="card-title"></h3><span class="card-meta muted"></span></header>
     <div class="card-options">
+      <label class="check"><input type="checkbox" class="opt-norm" checked> Normalized (maximum = 1)</label>
       <label class="check"><input type="checkbox" class="opt-log"> Log y-axis</label>
       <label>Smoothing: running mean of <input type="number" class="opt-smooth" min="1" step="2" value="7" title="An odd whole number of points; 1 = no smoothing"> points <span class="muted">(odd; 1 = none)</span></label>
       <span class="limits"><span class="lim-x"></span> from <input type="number" class="opt-xmin" step="any" placeholder="min"> to <input type="number" class="opt-xmax" step="any" placeholder="max"></span>

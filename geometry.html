@@ -219,6 +219,9 @@
   <p>Equivalently</p>
   $$q_x = k(\cos\alpha_f\cos\varphi_f - \cos\alpha_i),\qquad q_y = k\cos\alpha_f\sin\varphi_f,\qquad q_z = k(\sin\alpha_f + \sin\alpha_i)$$
   <p>The code uses the \(a/R,\ b/R,\ c/R\) form, vectorised over all pixels.</p>
+  <p>The in-plane magnitude, the horizontal axis of the \(q_z\) vs \(q_{xy}\) map, keeps the sign of \(q_y\) so the two sides of the detector stay apart:</p>
+  $$q_{xy} = \operatorname{sign}(q_y)\,\sqrt{q_x^2 + q_y^2} .$$
+  <p>At small angles \(q_x \approx 0\) and \(q_{xy} \approx q_y\). At GIWAXS angles \(q_x\) is not negligible, and the region near \(q_{xy} = 0\) that a flat detector cannot reach (the missing wedge) opens up.</p>
 </section>
 
 <section>

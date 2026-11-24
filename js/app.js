@@ -24,6 +24,17 @@ function num(v, digits = 6) {
   if (!s.includes("e") && s.includes(".")) s = s.replace(/\.?0+$/, "");
   return s.replace(/^-/, MINUS);
 }
+/** A short number the way it would be typed: 0.25, 1701, 2.73e-6. */
+function short(v, digits = 3) {
+  if (v == null || !Number.isFinite(v)) return "–";
+  return v !== 0 && Math.abs(v) < 1e-3 ? v.toExponential(digits - 1).replace(/\.?0+e/, "e") : num(v, digits);
+}
+/** A colour limit in counts, set to the whole number it is within 1e-5 of: a
+    normalized limit has few digits, and 5.00001 counts would push the pixels
+    with exactly 5 counts below the scale (as figures.whole_counts). */
+function wholeCounts(v) {
+  return Math.abs(v - Math.round(v)) < 1e-5 * Math.abs(v) ? Math.round(v) : v;
+}
 function fixed(v, d) {
   if (v == null || !Number.isFinite(v)) return "–";
   return v.toFixed(d).replace(/^-/, MINUS);
@@ -770,6 +781,7 @@ function axisDef(name) {
     alpha_f: { tex: String.raw`\alpha_f`, unit: String.raw`\mathrm{deg}`, label: "α<sub>f</sub>", fmt: ".4f", hunit: "°" },
     qy: { tex: "q_y", unit: u.tex, label: "q<sub>y</sub>", fmt: `.${u.digits}f`, hunit: ` ${u.html}` },
     qz: { tex: "q_z", unit: u.tex, label: "q<sub>z</sub>", fmt: `.${u.digits}f`, hunit: ` ${u.html}` },
+    qxy: { tex: "q_{xy}", unit: u.tex, label: "q<sub>xy</sub>", fmt: `.${u.digits}f`, hunit: ` ${u.html}` },
   };
   const d = defs[name];
   const full = String.raw`${d.tex}\ (${d.unit})`;
@@ -791,6 +803,8 @@ function axisStyle(title, extra = {}) {
 const MAPS = {
   raw: { title: String.raw`Raw intensity map: \(y\) vs \(x\) (full detector)`, plain: "raw y vs x",
          x: "x", y: "y", slug: "raw_y-vs-x", container: "#cards-raw" },
+  qz_qxy: { title: String.raw`\(q_z\) vs \(q_{xy}\)`, plain: "qz vs qxy",
+            x: "qxy", y: "qz", slug: "qz-vs-qxy", container: "#cards-maps" },
   qz_qy: { title: String.raw`\(q_z\) vs \(q_y\)`, plain: "qz vs qy",
            x: "qy", y: "qz", slug: "qz-vs-qy", container: "#cards-maps" },
   af_pf: { title: String.raw`\(\alpha_f\) vs \(\varphi_f\)`, plain: "alpha_f vs phi_f",
@@ -799,13 +813,13 @@ const MAPS = {
          x: "x", y: "y", slug: "y-vs-x", container: "#cards-maps" },
 };
 const PROFILES = {
-  phi_f: { title: String.raw`Mean counts per pixel vs \(\varphi_f\)`, plain: "profile vs phi_f",
+  phi_f: { plain: "profile vs phi_f",
            axis: "phi_f", slug: "profile-vs-phif", along: "detector columns" },
-  qy: { title: String.raw`Mean counts per pixel vs \(q_y\)`, plain: "profile vs qy",
+  qy: { plain: "profile vs qy",
         axis: "qy", slug: "profile-vs-qy", along: "detector columns" },
-  alpha_f: { title: String.raw`Mean counts per pixel vs \(\alpha_f\)`, plain: "profile vs alpha_f",
+  alpha_f: { plain: "profile vs alpha_f",
              axis: "alpha_f", slug: "profile-vs-alphaf", along: "detector rows" },
-  qz: { title: String.raw`Mean counts per pixel vs \(q_z\)`, plain: "profile vs qz",
+  qz: { plain: "profile vs qz",
         axis: "qz", slug: "profile-vs-qz", along: "detector rows" },
 };
 
@@ -950,12 +964,14 @@ class MapCard extends Card {
     this.def = def;
     this.slug = def.slug;
     this.isProfile = false;
-    this.usesQ = def.x === "qy";
+    this.usesQ = def.x === "qy" || def.x === "qxy";
     this.qAxes = this.usesQ ? ["x", "y"] : [];
     this.label = def.plain;
     setMath($(".card-title", this.el), def.title);
     const cmap = $(".opt-cmap", this.el);
     cmap.innerHTML = state.init.colormaps.map((c) => `<option value="${c}">${c}</option>`).join("");
+    // First the colour limits change unit, then the listener below redraws.
+    $(".opt-norm", this.el).addEventListener("change", () => this.rescaleColours());
     for (const input of $$(".card-options input, .card-options select", this.el)) {
       input.addEventListener("change", () => { if (this.data) this.draw(); });
     }
@@ -971,22 +987,57 @@ class MapCard extends Card {
     return py("map_data", { kind: this.kind, q_unit: state.qUnit }, [], "Preparing the map…");
   }
 
+  /** Whether the colour bar reads intensity / maximum of the map. */
+  normalized() {
+    return $(".opt-norm", this.el).checked;
+  }
+
+  /** The counts that 1 stands for on a normalized map: the maximum of the
+      unmasked pixels of the whole frame (as figures.map_scale). */
+  maximum() {
+    return (this.data && this.data.meta.vmax) || 0;
+  }
+
+  /** vmin and vmax typed in one unit, converted when the box is (un)ticked. */
+  rescaleColours() {
+    const max = this.maximum();
+    if (!(max > 0)) return;
+    const factor = this.normalized() ? 1 / max : max;
+    for (const cls of [".opt-vmin", ".opt-vmax"]) {
+      const input = $(cls, this.el);
+      if (input.value.trim() !== "" && Number.isFinite(Number(input.value))) {
+        let v = Number((Number(input.value) * factor).toPrecision(6));
+        if (!this.normalized()) v = wholeCounts(v);
+        input.value = v !== 0 && Math.abs(v) < 1e-3 ? v.toExponential() : String(v);
+      }
+    }
+  }
+
+  /** vmin, vmax as typed (in the unit of the colour bar); lo, hi in counts. */
   options() {
     const log = $(".opt-log", this.el).checked;
+    const normalized = this.normalized();
     const vmin = readNumber($(".opt-vmin", this.el), { min: log ? 0 : -Infinity, optional: true, name: "vmin" });
     const vmax = readNumber($(".opt-vmax", this.el), { min: -Infinity, optional: true, name: "vmax" });
     const size = readNumber($(".opt-size", this.el), { min: 0, optional: true, name: "Point size" });
-    const lo = vmin == null ? 1 : vmin;
-    const hi = vmax == null ? (this.data && this.data.meta.vmax) || 10 : vmax;
+    if (normalized && this.data && !(this.maximum() > 0)) {
+      throw new Error("There are no counts in the map to normalize to.");
+    }
+    const scale = normalized ? this.maximum() || 1 : 1;
+    const counts = (v) => (normalized ? wholeCounts(v * scale) : v);
+    // A normalized scale starts at a fixed fraction of the maximum, so weak
+    // signals drop out and the same colour means the same in every map.
+    const lo = vmin == null ? (normalized ? counts(state.init.colours.map_floor) : 1) : counts(vmin);
+    const hi = vmax == null ? this.maximum() || 10 : counts(vmax);
     if (hi <= lo) throw new Error("vmax must be larger than vmin.");
-    return { log, cmap: $(".opt-cmap", this.el).value, zero: $(".opt-zero", this.el).value,
+    return { log, normalized, scale, cmap: $(".opt-cmap", this.el).value, zero: $(".opt-zero", this.el).value,
              vmin, vmax, lo, hi, size };
   }
 
   exportArgs() {
     const o = this.options();
     const lim = this.limits();
-    return { log: o.log, cmap: o.cmap, vmin: o.vmin, vmax: o.vmax, zero_colour: o.zero,
+    return { log: o.log, normalize: o.normalized, cmap: o.cmap, vmin: o.vmin, vmax: o.vmax, zero_colour: o.zero,
              xlim: lim.x, ylim: lim.y };
   }
 
@@ -1048,21 +1099,25 @@ class MapCard extends Card {
     idx.sort((a, b) => c[a] - c[b]);
     const mx = new Float32Array(nMain), my = new Float32Array(nMain);
     const mc = new Float32Array(nMain), md = new Float32Array(nMain);
+    const mn = o.normalized ? new Float32Array(nMain) : null;
     for (let k = 0; k < nMain; k++) {
       const i = idx[k];
+      const v = c[i] / o.scale;
       mx[k] = x[i]; my[k] = y[i]; md[k] = c[i];
-      mc[k] = o.log ? Math.log10(c[i]) : c[i];      // colour only; data stay linear
+      if (mn) mn[k] = v;
+      mc[k] = o.log ? Math.log10(v) : v;            // colour only; data stay linear
     }
+    const vlo = o.lo / o.scale, vhi = o.hi / o.scale;   // the range in the unit of the colour bar
 
     const ax = axisDef(this.def.x), ay = axisDef(this.def.y);
     const where = `${ax.label} = %{x:${ax.fmt}}${ax.hunit}<br>${ay.label} = %{y:${ay.fmt}}${ay.hunit}`;
     const size = o.size || this.autoSize();
     const marker = (extra) => Object.assign({ size, symbol: "square", line: { width: 0 } }, extra);
 
-    let cmin = o.lo, cmax = o.hi, tickvals, ticktext;
+    let cmin = vlo, cmax = vhi, tickvals, ticktext;
     if (o.log) {
-      cmin = Math.log10(o.lo);
-      cmax = Math.log10(o.hi);
+      cmin = Math.log10(vlo);
+      cmax = Math.log10(vhi);
       tickvals = [];
       ticktext = [];
       for (let k = Math.ceil(cmin - 1e-9); k <= Math.floor(cmax + 1e-9); k++) {
@@ -1071,10 +1126,11 @@ class MapCard extends Card {
       }
       if (tickvals.length < 2) {
         tickvals = [cmin, cmax];
-        ticktext = [num(o.lo, 3), num(o.hi, 3)];
+        ticktext = [short(vlo), short(vhi)];
       }
     }
-    const underName = o.lo === 1 ? "0 counts (below the scale)" : `< ${num(o.lo, 4)} counts (below the scale)`;
+    const underName = o.lo === 1 ? "0 counts (below the scale)"
+      : `< ${short(vlo, 4)}${o.normalized ? "" : " counts"} (below the scale)`;
 
     const traces = [];
     if (nUnder) {
@@ -1103,17 +1159,21 @@ class MapCard extends Card {
     }
     traces.push({
       type: "scattergl", mode: "markers", name: "counts", showlegend: false,
-      x: mx, y: my, customdata: md,
+      x: mx, y: my, customdata: md, text: mn || undefined,
       marker: marker({
         color: mc, colorscale: colours.scales[o.cmap], cmin, cmax, showscale: true,
         colorbar: {
-          title: { text: "Counts", side: "right" }, thickness: 14, len: 0.9, outlinewidth: 0,
+          title: { text: o.normalized ? "Normalized intensity" : "Counts", side: "right" }, thickness: 14, len: 0.9, outlinewidth: 0,
           ticks: "outside", ticklen: 4, tickvals, ticktext,
         },
       }),
-      hovertemplate: `${where}<br>I = %{customdata:.6~r} cts<extra></extra>`,
+      hovertemplate: o.normalized
+        ? `${where}<br>I/I<sub>max</sub> = %{text:.4~r} (%{customdata:.6~r} cts)<extra></extra>`
+        : `${where}<br>I = %{customdata:.6~r} cts<extra></extra>`,
     });
 
+    $(".opt-vmin", this.el).placeholder = o.normalized ? short(colours.map_floor) : "1";
+    $(".opt-vmax", this.el).placeholder = o.normalized ? "1" : "max";
     this.setLabel(".lim-x", ax.page);
     this.setLabel(".lim-y", ay.page);
     const fullX = this.fullRange("x"), fullY = this.fullRange("y");
@@ -1146,7 +1206,9 @@ class MapCard extends Card {
     $(".card-meta", this.el).textContent = this.kind === "raw"
       ? `${int(n)} pixels, before conversion` : `${int(n)} pixels, ${maskLabel()}`;
     this.note.textContent =
-      `${o.log ? "log₁₀ colour scale" : "linear colour scale"}, ${num(o.lo, 4)} – ${int(o.hi)} counts · ` +
+      `${o.log ? "log₁₀ colour scale" : "linear colour scale"}, ` +
+      (o.normalized ? `${short(vlo)} – ${short(vhi)}, 1 = ${int(o.scale)} counts · `
+        : `${num(o.lo, 4)} – ${int(o.hi)} counts · `) +
       `${int(nUnder)} below the scale (${pct(nUnder, n)}) · ${int(nBad)} NaN · ` +
       `point size ${o.size ? num(o.size, 3) : "auto"}`;
   }
@@ -1177,8 +1239,8 @@ class ProfileCard extends Card {
     this.usesQ = kind === "qy" || kind === "qz";
     this.qAxes = this.usesQ ? ["x"] : [];
     this.label = def.plain;
-    setMath($(".card-title", this.el), def.title);
-    for (const cls of [".opt-log", ".opt-xmin", ".opt-xmax"]) {
+    this.setTitle();
+    for (const cls of [".opt-norm", ".opt-log", ".opt-xmin", ".opt-xmax"]) {
       $(cls, this.el).addEventListener("change", () => { if (this.data) this.draw(); });
     }
     this.zoomListener = null;
@@ -1288,8 +1350,22 @@ class ProfileCard extends Card {
               [], "Computing the profile…");
   }
 
+  /** Whether the profile is divided by its maximum. */
+  normalized() {
+    return $(".opt-norm", this.el).checked;
+  }
+
+  yTitle() {
+    return this.normalized() ? "Normalized intensity" : "Mean counts per pixel";
+  }
+
+  setTitle() {
+    this.setLabel(".card-title", `${this.yTitle()} vs ${tex(axisDef(this.def.axis).tex)}`);
+  }
+
   exportArgs() {
-    return { log: $(".opt-log", this.el).checked, smooth: this.smoothing(), xlim: this.limits().x,
+    return { log: $(".opt-log", this.el).checked, normalize: this.normalized(),
+             smooth: this.smoothing(), xlim: this.limits().x,
              marks: this.marks.map((m) => ({ x: m.value, text: m.text, style: m.style })) };
   }
 
@@ -1327,8 +1403,24 @@ class ProfileCard extends Card {
       return;
     }
     const pick = (a) => Float64Array.from(keep, (i) => a[i]);
-    const x = pick(arrays.x), measured = pick(arrays.raw), smoothed = pick(arrays.y);
+    const x = pick(arrays.x), measuredCounts = pick(arrays.raw), smoothedCounts = pick(arrays.y);
     const smooth = meta.smooth > 1;
+
+    // Normalized: both curves divided by the highest point of the main curve
+    // among the points drawn, so it peaks at 1 (as figures.profile_scale).
+    const normalized = this.normalized();
+    let scale = 1;
+    if (normalized) {
+      scale = -Infinity;
+      for (const v of smooth ? smoothedCounts : measuredCounts) if (v > scale) scale = v;
+      if (!(scale > 0)) {
+        this.note.textContent = "There are no counts inside the x-axis limits to normalize to.";
+        return;
+      }
+    }
+    const measured = measuredCounts.map((v) => v / scale);
+    const smoothed = smoothedCounts.map((v) => v / scale);
+    this.setTitle();
     const where = `${ax.label} = %{x:${ax.fmt}}${ax.hunit}`;
     const spikes = { showspikes: true, spikemode: "across", spikesnap: "data", spikethickness: 1,
                      spikedash: "dot", spikecolor: "#6b7585" };
@@ -1338,13 +1430,17 @@ class ProfileCard extends Card {
       { type: "scatter", mode: "lines", name: "measured", x, y: measured, connectgaps: false,
         line: { color: colours.measured, width: 1 }, hoverinfo: "skip" },
       { type: "scatter", mode: "lines", name: `smoothed (${meta.smooth}-point running mean)`,
-        x, y: smoothed, customdata: measured, connectgaps: false,
-        line: { color: colours.smoothed, width: 2 },
-        hovertemplate: `${where}, I = %{y:.4~r} cts (measured %{customdata:.4~r})<extra></extra>` },
+        x, y: smoothed, customdata: Array.from(smoothedCounts, (v, i) => [v, measuredCounts[i]]),
+        connectgaps: false, line: { color: colours.smoothed, width: 2 },
+        hovertemplate: normalized
+          ? `${where}, I/I<sub>max</sub> = %{y:.4~r} (%{customdata[0]:.4~r} cts, measured %{customdata[1]:.4~r} cts)<extra></extra>`
+          : `${where}, I = %{y:.4~r} cts (measured %{customdata[1]:.4~r})<extra></extra>` },
     ] : [
-      { type: "scatter", mode: "lines", name: "measured", x, y: measured, connectgaps: false,
-        line: { color: colours.smoothed, width: 1.5 },
-        hovertemplate: `${where}, I = %{y:.4~r} cts<extra></extra>` },
+      { type: "scatter", mode: "lines", name: "measured", x, y: measured, customdata: measuredCounts,
+        connectgaps: false, line: { color: colours.smoothed, width: 1.5 },
+        hovertemplate: normalized
+          ? `${where}, I/I<sub>max</sub> = %{y:.4~r} (%{customdata:.4~r} cts)<extra></extra>`
+          : `${where}, I = %{y:.4~r} cts<extra></extra>` },
     ];
     const limited = lim.x[0] != null || lim.x[1] != null;
     const xlo = lim.x[0] == null ? x[0] : lim.x[0];
@@ -1391,13 +1487,13 @@ class ProfileCard extends Card {
       font: FONT, paper_bgcolor: "#fff", plot_bgcolor: "#fff",
       margin: { l: 10, r: 16, t: smooth ? 30 : 16, b: 10 },
       xaxis: axisStyle(ax.title, Object.assign(xRange, spikes)),
-      yaxis: axisStyle("Mean counts per pixel", Object.assign({ type: log ? "log" : "linear" }, yRange, spikes)),
+      yaxis: axisStyle(this.yTitle(), Object.assign({ type: log ? "log" : "linear" }, yRange, spikes)),
       shapes, annotations,
       hovermode: "closest", hoverdistance: -1, spikedistance: -1,
       showlegend: smooth,
       legend: { orientation: "h", x: 0, xanchor: "left", y: 1.0, yanchor: "bottom", font: { size: 13 } },
       hoverlabel: { font: { family: FONT.family, size: 12 } },
-      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${log}|${meta.smooth}|` +
+      uirevision: `${this.kind}|${this.usesQ ? state.qUnit : ""}|${state.loadToken}|${log}|${normalized}|${meta.smooth}|` +
                   `${JSON.stringify(lim)}|${shown.map((m) => m.value).join(",")}`,
     };
     Plotly.react(this.plot, traces, layout, PLOT_CONFIG).then(() => {
@@ -1409,7 +1505,9 @@ class ProfileCard extends Card {
     $(".card-meta", this.el).textContent = `${int(meta.n)} ${this.def.along}, ${maskLabel()}`;
     const smoothing = meta.smooth > 1 ? `smoothed: centred running mean of ${meta.smooth} points` : "not smoothed";
     const hidden = this.marks.length - shown.length;
-    this.note.textContent = `${smoothing} · ` + (meta.n_gaps
+    const norm = normalized
+      ? ` · 1 = the maximum ${limited ? "in view" : "of the profile"}, ${num(scale, 4)} counts per pixel` : "";
+    this.note.textContent = `${smoothing}${norm} · ` + (meta.n_gaps
       ? `${int(meta.n_gaps)} fully masked ${this.def.along.replace("detector ", "")} drawn as gaps`
       : "no fully masked columns or rows") +
       (hidden ? ` · ${hidden === 1 ? "1 label lies" : `${hidden} labels lie`} outside the plotted range` : "");

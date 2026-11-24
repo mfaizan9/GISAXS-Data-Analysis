@@ -468,6 +468,18 @@ def read_dat(path, nx=None, ny=None, progress=None):
 # Export (step 9)
 # ---------------------------------------------------------------------------
 
+def q_xy(qx, qy):
+    """Signed in-plane magnitude of q: sign(q_y) * sqrt(q_x^2 + q_y^2).
+
+    The GIWAXS in-plane axis.  q_x is not negligible at wide angles, so
+    q_xy differs from q_y there; the sign of q_y keeps the two sides of the
+    detector apart (q_y = 0 counts as positive).
+    """
+    qx = np.asarray(qx, dtype=float)
+    qy = np.asarray(qy, dtype=float)
+    return np.where(qy < 0.0, -1.0, 1.0) * np.hypot(qx, qy)
+
+
 def q_unit_info(q_unit):
     try:
         return Q_UNITS[q_unit]

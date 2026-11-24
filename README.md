@@ -39,11 +39,12 @@ that unlock in order:
 11. **Mask the specular spot?** (only if the rod was not masked) with `spot.py`;
     the search starts at the brightest row along $\varphi_f \simeq 0$ and the
     window follows the peak.
-12. **2D intensity maps**: $q_z$ vs $q_y$, $\alpha_f$ vs $\varphi_f$, $y$ vs
-    $x$. Every pixel is one point coloured by its counts; no averaging, no
-    regridding.
+12. **2D intensity maps**: $q_z$ vs $q_y$, $q_z$ vs $q_{xy}$ (the usual GIWAXS
+    view, $q_{xy} = \operatorname{sign}(q_y)\sqrt{q_x^2 + q_y^2}$), $\alpha_f$ vs
+    $\varphi_f$, $y$ vs $x$. Every pixel is one point coloured by its counts; no
+    averaging, no regridding.
 13. **1D intensity profiles**: mean counts per pixel vs $\varphi_f$, $q_y$,
-    $\alpha_f$, $q_z$, smoothed with a centred running mean of 7 points by
+    $\alpha_f$, $q_z$, normalized to a maximum of 1 and smoothed with a centred running mean of 7 points by
     default (any odd number can be typed; 1 = none).
 
 Every plot has **PNG** and **PDF** buttons underneath: the figure is redrawn
@@ -257,6 +258,27 @@ is masked (n default 4). A FWHM narrower than one pixel is replaced by one pixel
   so neighbouring labels part, and the top of the plot is kept free for them.
   The PNG/PDF export draws the same lines and labels; labels on q axes are
   converted when the q unit is switched.
+- **Normalized maps.** Tick **Normalized (maximum = 1)** on a 2D map and the
+  colour bar reads the intensity divided by the maximum of the unmasked pixels
+  of the whole frame (not only of the part in view, like the colour range); the
+  hover label shows that and the counts. The colour scale then runs from 0.001 to
+  1 in every map: signals weaker than a thousandth of the maximum fall below the
+  scale and disappear into the background, and the same colour means the same
+  normalized intensity in two maps. $v_{\min}$ and $v_{\max}$ are typed in the
+  normalized unit (what is already typed is converted): a smaller $v_{\min}$
+  brings weak features back, a larger one removes more. In a weak map 1 count is
+  already more than 0.001 of the maximum, so nothing drops out until $v_{\min}$
+  is raised. The PNG/PDF export follows the box (`figures.map_scale`,
+  `figures.MAP_FLOOR`).
+- **Normalized profiles.** Both curves are divided by the maximum of the main
+  curve (the smoothed one, or the measured one without smoothing) among the
+  points shown, so the plot peaks at 1 and profiles with different exposures
+  can be compared. With x limits it is the maximum inside them, so a range that
+  leaves the specular spot out is scaled to its own highest feature; compare
+  profiles over the same x range. The note under the plot gives the number of
+  counts per pixel that 1 stands for, and the hover label the counts. Untick
+  **Normalized** for the mean counts per pixel. The PNG/PDF export follows the
+  box (`figures.profile_scale`).
 - **Profile smoothing.** Each 1D profile is smoothed with a centred running
   mean, `profile.rolling(7, center=True, min_periods=1).mean()` by default.
   The number of points is typed per plot: any odd whole number (1 = no
