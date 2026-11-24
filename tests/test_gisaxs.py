@@ -1057,3 +1057,215 @@ def test_alpha_check_and_correction(monkeypatch):
     monkeypatch.setattr(bridge.S, "raw", raw)
     c = call("check_alpha")
     assert not c["needs_correction"] and abs(c["pixels_off"]) <= 1
+
+
+def test_q_xy_is_the_signed_in_plane_magnitude():
+    qx = np.array([0.3, -0.4, 0.0, 0.5])
+    qy = np.array([0.4, -0.3, 0.0, -1e-9])
+    np.testing.assert_allclose(gisaxs.q_xy(qx, qy), [0.5, -0.5, 0.0, -0.5])
+    # on the toy table q_xy keeps the side of q_y and is never shorter than it
+    df = gisaxs.convert(make_frame(5, 6, 0.5, -1.0, 3.0), TOY)
+    qxy = gisaxs.q_xy(df["qx"], df["qy"])
+    assert np.all(np.abs(qxy) >= np.abs(df["qy"]) - 1e-15)
+    assert np.all((qxy >= 0) == (df["qy"] >= 0))
+
+
+GIWAXS_PRO = TEST_DATA / "b-doped-GIWAXS" / "bcvs-12-31-2023_0001.pro"
+GIWAXS_DAT = TEST_DATA / "b-doped-GIWAXS" / "bcvs-12-31-2023_0001_2D.dat"
+
+
+@pytest.mark.skipif(not (GIWAXS_PRO.exists() and GIWAXS_DAT.exists()), reason="no GIWAXS frame")
+def test_qz_vs_qxy_map_on_a_giwaxs_frame():
+    bridge = pytest.importorskip("bridge")
+
+    def call(cmd, **kw):
+        out = bridge.dispatch(cmd, json.dumps(kw))
+        meta = json.loads(out["meta"])
+        assert "error" not in meta, meta.get("error")
+        return meta, out.get("arrays")
+
+    call("load_pro", path=str(GIWAXS_PRO), name=GIWAXS_PRO.name)
+    call("load_dat", path=str(GIWAXS_DAT), name=GIWAXS_DAT.name)
+    call("convert", correct_offset=False)
+    meta, arrays = call("map_data", kind="qz_qxy", q_unit="nm-1")
+    qxy = np.asarray(arrays["x"], dtype=float)
+    want = gisaxs.q_xy(bridge.S.data["qx"], bridge.S.data["qy"])
+    np.testing.assert_allclose(qxy, want, rtol=1e-6)                   # float32 on the wire
+    # at L = 80 mm the edges are far from q_y alone
+    qy = bridge.S.data["qy"].to_numpy()
+    assert np.max(np.abs(np.abs(qxy) - np.abs(qy))) > 0.5
+    assert meta["x_range"][1] > 15 and meta["x_range"][0] < -15
+    a, _ = call("map_data", kind="qz_qxy", q_unit="A-1")
+    assert a["x_range"][1] == pytest.approx(meta["x_range"][1] / 10, rel=1e-6)
+    _, out = call("export_figure", kind="qz_qxy", fmt="png")
+    data = bytes(out["file"])
+    assert data[:4] == b"\x89PNG"
+    assert int.from_bytes(data[16:20], "big") / int.from_bytes(data[20:24], "big") == \
+        pytest.approx(297 / 210, rel=0.01)
+
+
+def test_normalized_profile(monkeypatch):
+    figures = pytest.importorskip("figures")
+    captured = {}
+
+    def keep(fig, fmt):
+        captured["ax"] = fig.axes[0]
+        return b"figure"
+
+    monkeypatch.setattr(figures, "_to_bytes", keep)
+
+    def curves(**kw):
+        figures.profile(x, y, "a", log=False, **kw)
+        ax = captured["ax"]
+        lines = [l for l in ax.lines if len(set(l.get_xdata())) > 1]
+        return ax, [np.asarray(l.get_ydata(), dtype=float) for l in lines]
+
+    x = np.linspace(0.0, 1.0, 101)
+    y = 2.0 + 500.0 * np.exp(-((x - 0.2) / 0.02) ** 2) + 8.0 * np.exp(-((x - 0.7) / 0.05) ** 2)
+    y[10] = np.nan                                            # a masked gap
+    smoothed = gisaxs.smooth_profile(pd.Series(y, index=x), 7).to_numpy()
+    try:
+        # the main (smoothed) curve peaks at 1, the measured one is scaled by
+        # the same number, and the gap stays a gap
+        ax, (measured, main) = curves(smoothed=smoothed, normalize=True)
+        assert ax.get_ylabel() == "Normalized intensity"
+        scale = figures.profile_scale(smoothed)
+        assert np.nanmax(main) == pytest.approx(1.0)
+        np.testing.assert_allclose(main, smoothed / scale)
+        np.testing.assert_allclose(measured, y / scale)
+        assert np.isnan(measured[10])
+        assert np.nanmax(measured) > 1.0                      # the raw peak is sharper
+        # without smoothing the measured curve itself peaks at 1
+        ax, (measured,) = curves(normalize=True)
+        assert np.nanmax(measured) == pytest.approx(1.0)
+        # with x limits the maximum is the one in view: the weak peak becomes 1
+        ax, (measured, main) = curves(smoothed=smoothed, normalize=True, xlim=[0.5, 0.9])
+        view = (x >= 0.5) & (x <= 0.9)
+        assert np.nanmax(main) == pytest.approx(1.0)
+        np.testing.assert_allclose(main, smoothed[view] / np.nanmax(smoothed[view]))
+        # two frames that differ only in exposure give the same curve
+        y = 3.7 * y
+        _, (_, longer) = curves(smoothed=3.7 * smoothed, normalize=True, xlim=[0.5, 0.9])
+        np.testing.assert_allclose(longer, main)
+        y = y / 3.7
+        # switched off: mean counts, unchanged
+        ax, (measured, main) = curves(smoothed=smoothed)
+        assert ax.get_ylabel() == "Mean counts per pixel"
+        np.testing.assert_allclose(main, smoothed)
+        # labels and their head room work on the normalized curve
+        ax, _ = curves(smoothed=smoothed, normalize=True, xlim=[0.5, 0.9],
+                       marks=[{"x": 0.7, "label": "a = 0.7", "style": 0}])
+        assert [t.get_text() for t in ax.texts] == ["a = 0.7"] and ax.get_ylim()[1] > 1.1
+        # nothing to normalize to
+        with pytest.raises(figures.FigureError, match="no counts"):
+            figures.profile(x, np.zeros_like(x), "a", normalize=True)
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+@needs_both
+def test_bridge_exports_a_normalized_profile():
+    bridge = pytest.importorskip("bridge")
+
+    def call(cmd, **kw):
+        out = bridge.dispatch(cmd, json.dumps(kw))
+        meta = json.loads(out["meta"])
+        assert "error" not in meta, meta.get("error")
+        return meta, out.get("arrays")
+
+    call("load_pro", path=str(REAL_PRO), name=REAL_PRO.name)
+    call("load_dat", path=str(REAL_DAT), name=REAL_DAT.name)
+    call("convert", correct_offset=False)
+    files = []
+    for normalize in (True, False):
+        _, arrays = call("export_figure", kind="alpha_f", fmt="png", profile=True, log=False,
+                         normalize=normalize, xlim=[0.0, 0.3])
+        files.append(bytes(arrays["file"]))
+        assert files[-1][:4] == b"\x89PNG"
+    assert files[0] != files[1]
+
+
+def test_normalized_map(monkeypatch):
+    figures = pytest.importorskip("figures")
+    captured = {}
+
+    def keep(fig, fmt):
+        captured["axes"] = fig.axes
+        return b"figure"
+
+    monkeypatch.setattr(figures, "_to_bytes", keep)
+    counts = np.arange(30.0).reshape(6, 5) * 100.0            # 0 .. 2900
+    counts[2, 2] = np.nan
+    df = gisaxs.convert(make_frame(5, 6, 0.5, -1.0, 3.0, counts), TOY)
+
+    def draw(**kw):
+        figures.intensity_map(df["phi_f"], df["alpha_f"], df["intensity"], "x", "y",
+                              pixel=(0.3, 0.3), **kw)
+        ax, bar = captured["axes"]
+        return ax.collections[0], bar
+
+    try:
+        assert figures.map_scale(df["intensity"]) == 2900.0
+        assert figures.screen_colours()["map_floor"] == figures.MAP_FLOOR == 1e-3
+        for log in (True, False):
+            # the scale runs from MAP_FLOOR to 1 in every normalized map, so
+            # what is weaker than that (and only that) is below the scale
+            norm, norm_bar = draw(log=log, normalize=True)
+            assert (norm.norm.vmin, norm.norm.vmax) == pytest.approx((2.9, 2900.0))
+            assert norm_bar.get_ylabel() == "Normalized intensity"
+            assert norm_bar.get_ylim() == pytest.approx((1e-3, 1.0))
+            # with the same limits every pixel has the colour it has in counts
+            plain, plain_bar = draw(log=log, vmin=29.0, vmax=1450.0)
+            norm, norm_bar = draw(log=log, normalize=True, vmin=0.01, vmax=0.5)
+            np.testing.assert_allclose(norm.to_rgba(norm.get_array()), plain.to_rgba(plain.get_array()))
+            assert plain_bar.get_ylabel() == "Counts"
+            assert plain_bar.get_ylim() == pytest.approx((29.0, 1450.0))
+            assert norm_bar.get_ylim() == pytest.approx((0.01, 0.5))
+        # vmin and vmax are typed in the unit of the colour bar
+        norm, bar = draw(normalize=True, vmin=0.01, vmax=0.5)
+        assert (norm.norm.vmin, norm.norm.vmax) == pytest.approx((29.0, 1450.0))
+        assert bar.get_ylim() == pytest.approx((0.01, 0.5))
+        # a limit converted from 5 counts and back keeps the 5-count pixels
+        assert figures.whole_counts(1.36515e-5 * 366261) == 5.0
+        assert figures.whole_counts(5.4) == 5.4 and figures.whole_counts(0.2) == 0.2
+        norm, _ = draw(normalize=True, vmin=float(f"{700 / 2900:.6g}"))
+        assert norm.norm.vmin == 700.0
+        # zooming in leaves the scale alone: it is the maximum of the frame
+        norm, bar = draw(normalize=True, ylim=[None, float(df["alpha_f"].iloc[9])])
+        assert norm.norm.vmax == 2900.0 and bar.get_ylim()[1] == pytest.approx(1.0)
+        # two exposures of the same pattern get the same colours with the same limits
+        a, _ = draw(normalize=True, vmin=0.01)
+        df["intensity"] *= 4.0
+        b, _ = draw(normalize=True, vmin=0.01)
+        live = np.isfinite(np.ma.getdata(a.get_array())) & (np.ma.getdata(a.get_array()) > 100)
+        np.testing.assert_allclose(b.to_rgba(b.get_array())[live], a.to_rgba(a.get_array())[live])
+        df["intensity"] = 0.0
+        with pytest.raises(figures.FigureError, match="no counts in the map"):
+            draw(normalize=True)
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close("all")
+
+
+@needs_both
+def test_bridge_exports_a_normalized_map():
+    bridge = pytest.importorskip("bridge")
+
+    def call(cmd, **kw):
+        out = bridge.dispatch(cmd, json.dumps(kw))
+        meta = json.loads(out["meta"])
+        assert "error" not in meta, meta.get("error")
+        return meta, out.get("arrays")
+
+    call("load_pro", path=str(REAL_PRO), name=REAL_PRO.name)
+    call("load_dat", path=str(REAL_DAT), name=REAL_DAT.name)
+    call("convert", correct_offset=False)
+    meta, _ = call("map_data", kind="af_pf")
+    assert meta["vmax"] == bridge.figures.map_scale(bridge.S.data["intensity"])   # the page's maximum
+    files = []
+    for kw in ({"normalize": False}, {"normalize": True}, {"normalize": True, "vmin": 1e-4, "vmax": 1.0}):
+        _, arrays = call("export_figure", kind="af_pf", fmt="png", xlim=[-0.2, 0.2], ylim=[0.2, 0.6], **kw)
+        files.append(bytes(arrays["file"]))
+        assert files[-1][:4] == b"\x89PNG"
+    assert len(set(files)) == 3

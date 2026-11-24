@@ -90,9 +90,11 @@ def axis_label(name, q_unit="nm-1"):
         "phi_f": r"$\varphi_f$ (deg)",
         "alpha_f": r"$\alpha_f$ (deg)",
         "qy": rf"$q_y$ ({unit})",
+        "qxy": rf"$q_{{xy}}$ ({unit})",
         "qz": rf"$q_z$ ({unit})",
         "counts": "Counts",
         "mean": "Mean counts per pixel",
+        "normalized": "Normalized intensity",
     }
     return labels[name]
 
@@ -226,10 +228,36 @@ def colour_limits(counts, vmin=None, vmax=None):
     return float(vmin), float(vmax)
 
 
+# Where the colour scale of a normalized map starts, unless vmin is given:
+# anything weaker than this fraction of the maximum is below the scale and
+# disappears into the background.  The same in every map, so the same colour
+# means the same normalized intensity (the page gets it from screen_colours()).
+MAP_FLOOR = 1e-3
+
+
+def map_scale(counts):
+    """What a normalized map is divided by: the maximum of the unmasked pixels
+    of the whole frame, whatever the axis limits, like the colour range."""
+    counts = np.asarray(counts, dtype=float)
+    finite = counts[np.isfinite(counts)]
+    if not finite.size or not finite.max() > 0:
+        raise FigureError("there are no counts in the map to normalize to")
+    return float(finite.max())
+
+
+def whole_counts(value):
+    """A colour limit in counts, set to the whole number it is within 1e-5 of.
+
+    A limit typed as normalized intensity has few digits; times the maximum it
+    may come out as 5.00001 counts, which would push the pixels with exactly 5
+    counts below the scale.  js/app.js (wholeCounts) does the same on screen."""
+    return float(round(value)) if abs(value - round(value)) < 1e-5 * abs(value) else value
+
+
 def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
                   vmin=None, vmax=None, zero_colour="white",
                   preset="publication", columns=1, fmt="png", pixel=None,
-                  equal_aspect=True, xlim=None, ylim=None):
+                  equal_aspect=True, xlim=None, ylim=None, normalize=False):
     """A scatter plot of every pixel coloured by counts; returns PNG/PDF bytes.
 
     pixel      : (dx, dy) pixel pitch in data units, used to size the markers
@@ -238,12 +266,20 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
     xlim, ylim : [lo, hi] axis limits, either end None for the data's own.
                  The default colour range still comes from the whole frame,
                  so a zoomed figure keeps the colours of the full one.
+    normalize  : the colour bar reads intensity / map_scale(counts), and vmin
+                 and vmax are given in that unit, MAP_FLOOR and 1 by default.
+                 For the same limits every pixel has the colour it has in
+                 counts, so the pixels stay counts.
     """
     if cmap not in COLORMAPS:
         raise ValueError(f"colormap must be one of {COLORMAPS}")
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     c = np.asarray(counts, dtype=float)
+    scale = map_scale(c) if normalize else 1.0
+    if normalize:
+        vmin = MAP_FLOOR if vmin is None else vmin
+        vmin, vmax = (None if v is None else whole_counts(v * scale) for v in (vmin, vmax))
     vmin, vmax = colour_limits(c, vmin, vmax)
     if log and vmin <= 0:
         raise ValueError("on a log scale vmin must be > 0")
@@ -252,6 +288,7 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
         apply_style(preset)
         colours = plotstyle.intensity_cmap(cmap,
                                            zero_colour=ZERO_COLOURS[zero_colour])
+        bar_norm = (LogNorm if log else Normalize)(vmin=vmin / scale, vmax=vmax / scale)
         if log:
             norm = LogNorm(vmin=vmin, vmax=vmax)
             # A log scale has no place for 0: nudge measured zeros just under
@@ -283,8 +320,9 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
         extend = "min"
         if finite.size and finite.max() > vmax:
             extend = "both"
-        mappable = mpl.cm.ScalarMappable(norm=norm, cmap=colours)
-        fig.colorbar(mappable, ax=ax, extend=extend, label=axis_label("counts"),
+        mappable = mpl.cm.ScalarMappable(norm=bar_norm, cmap=colours)
+        fig.colorbar(mappable, ax=ax, extend=extend,
+                     label=axis_label("normalized" if normalize else "counts"),
                      fraction=0.046, pad=0.03)
 
         # Size the squares from the final axes box (after the layout, the
@@ -313,8 +351,21 @@ def intensity_map(x, y, counts, xlabel, ylabel, *, log=True, cmap="viridis",
         return _to_bytes(fig, fmt)
 
 
+def profile_scale(values):
+    """What a normalized profile is divided by: the maximum of its main curve
+    (the smoothed one, or the measured one without smoothing) over the points
+    drawn.  js/app.js (ProfileCard.draw) does the same on screen."""
+    values = np.asarray(values, dtype=float)
+    finite = values[np.isfinite(values)]
+    if not finite.size or not finite.max() > 0:
+        raise FigureError("there are no counts inside the x-axis limits to "
+                         "normalize to")
+    return float(finite.max())
+
+
 def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
-            columns=1, fmt="png", ylabel=None, xlim=None, marks=None):
+            columns=1, fmt="png", ylabel=None, xlim=None, marks=None,
+            normalize=False):
     """Mean counts per pixel against one coordinate; NaN draws as a gap.
 
     smoothed : the smoothed profile; the measured one is then drawn faded
@@ -324,6 +375,8 @@ def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
     marks    : labelled vertical lines, [{"x", "label", "style"}] (label from
                mark_label(), style an index into MARK_STYLES); those outside
                the x-axis limits are left out.
+    normalize: divide both curves by the maximum of the main curve inside the
+               x-axis limits (profile_scale), so it peaks at 1.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -331,6 +384,13 @@ def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
     view = (x >= lo) & (x <= hi)
     if view.sum() < 2:
         raise FigureError("fewer than 2 points lie inside the x-axis limits")
+    if smoothed is not None:
+        smoothed = np.asarray(smoothed, dtype=float)
+    if normalize:
+        scale = profile_scale((y if smoothed is None else smoothed)[view])
+        y = y / scale
+        smoothed = None if smoothed is None else smoothed / scale
+        ylabel = ylabel or axis_label("normalized")
     with mpl.rc_context():
         apply_style(preset)
         fig, ax = plt.subplots(figsize=figure_size(preset, columns), layout="constrained")
@@ -339,7 +399,6 @@ def profile(x, y, xlabel, *, smoothed=None, log=True, preset="publication",
             ax.plot(x[view], y[view], "-", color=PROFILE_SMOOTHED["color"],
                     linewidth=width)
         else:
-            smoothed = np.asarray(smoothed, dtype=float)
             ax.plot(x[view], y[view], "-", color=PROFILE_MEASURED["color"],
                     linewidth=PROFILE_MEASURED["width"] * width, zorder=1)
             ax.plot(x[view], smoothed[view], "-", color=PROFILE_SMOOTHED["color"],
@@ -369,4 +428,5 @@ def screen_colours(n=64):
     profile = {"measured": to_hex(PROFILE_MEASURED["color"]),
                "smoothed": to_hex(PROFILE_SMOOTHED["color"])}
     return {"scales": scales, "under": under, "bad": bad, "profile": profile,
-            "marks": [dict(m) for m in MARK_STYLES], "mark_headroom": MARK_HEADROOM}
+            "marks": [dict(m) for m in MARK_STYLES], "mark_headroom": MARK_HEADROOM,
+            "map_floor": MAP_FLOOR}
